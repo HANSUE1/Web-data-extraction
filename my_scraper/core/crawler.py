@@ -61,13 +61,13 @@ class ProductionCrawler:
         self.semaphore = asyncio.Semaphore(config.concurrency.max_workers)
         
         # Import components
-        from utils.politeness import PolitenessManager
-        from utils.retry import RetryManager
-        from fetcher.smart_fetcher import SmartFetcher, RawHtmlStorage
-        from parser.universal_parser import UniversalParser
-        from storage.multi_format import StorageManager
-        from compliance.manager import ComplianceManager
-        from logging.structured import StructuredLogger, log_request, log_parsing
+        from my_scraper.utils.politeness import PolitenessManager
+        from my_scraper.utils.retry import RetryManager
+        from my_scraper.fetcher.smart_fetcher import SmartFetcher, RawHtmlStorage
+        from my_scraper.parser.universal_parser import UniversalParser
+        from my_scraper.storage.multi_format import StorageManager
+        from my_scraper.compliance.manager import ComplianceManager
+        from my_scraper.logging.structured import StructuredLogger, log_request, log_parsing
         
         self.politeness = PolitenessManager(config)
         self.retry_manager = RetryManager(config)

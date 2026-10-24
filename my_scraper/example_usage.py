@@ -5,8 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config.settings import CrawlConfig, FetcherType, ExportFormat
-from core.crawler import ProductionCrawler
+from my_scraper.config.settings import CrawlConfig, FetcherType, ExportFormat
+from my_scraper.core.crawler import ProductionCrawler
 
 
 async def main():

@@ -7,8 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config.settings import CrawlConfig, DEFAULT_CONFIG
-from core.crawler import ProductionCrawler
+from my_scraper.config.settings import CrawlConfig, DEFAULT_CONFIG
+from my_scraper.core.crawler import ProductionCrawler
 
 
 def main():

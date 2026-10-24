@@ -1,0 +1,2 @@
+{"url": "https://books.toscrape.com/", "attempts": 3, "last_error": "module 'queue' has no attribute 'SimpleQueue'", "last_status": null, "failed_at": "2026-10-24T12:36:38.080258Z", "reason": "Non-retryable exception: module 'queue' has no attribute 'SimpleQueue'"}
+{"url": "https://books.toscrape.com/", "attempts": 3, "last_error": "module 'queue' has no attribute 'SimpleQueue'", "last_status": null, "failed_at": "2026-10-24T12:37:36.741168Z", "reason": "Non-retryable exception: module 'queue' has no attribute 'SimpleQueue'"}
