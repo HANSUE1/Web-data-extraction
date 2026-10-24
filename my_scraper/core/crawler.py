@@ -60,14 +60,23 @@ class ProductionCrawler:
         self.results = []
         self.semaphore = asyncio.Semaphore(config.concurrency.max_workers)
         
-        # Import components
+# Import components
         from my_scraper.utils.politeness import PolitenessManager
         from my_scraper.utils.retry import RetryManager
         from my_scraper.fetcher.smart_fetcher import SmartFetcher, RawHtmlStorage
         from my_scraper.parser.universal_parser import UniversalParser
         from my_scraper.storage.multi_format import StorageManager
         from my_scraper.compliance.manager import ComplianceManager
-        from my_scraper.logging.structured import StructuredLogger, log_request, log_parsing
+        try:
+            from my_scraper.logging import StructuredLogger, log_request, log_parsing
+            import sys
+            print(f"SUCCESS: Imported log_request={log_request}, log_parsing={log_parsing}", file=sys.stderr)
+        except ImportError as e:
+            import sys
+            print(f"LOGGING IMPORT ERROR: {e}", file=sys.stderr)
+            StructuredLogger = None
+            log_request = None
+            log_parsing = None
         
         self.politeness = PolitenessManager(config)
         self.retry_manager = RetryManager(config)
@@ -82,6 +91,10 @@ class ProductionCrawler:
             config.logging.json_format
         )
         self.raw_storage = RawHtmlStorage(config.storage.blob_storage_path)
+        
+        # Store log functions as instance attributes
+        self.log_request = log_request
+        self.log_parsing = log_parsing
     
     async def crawl(self, start_urls: List[str] = None, selectors: Dict[str, str] = None):
         """Start crawling."""
@@ -166,7 +179,7 @@ class ProductionCrawler:
                 )
                 duration_ms = (time.time() - start_time) * 1000
                 
-                log_request(self.logger, url, 'GET', fetch_result['status_code'], 
+                self.log_request(self.logger, url, 'GET', fetch_result['status_code'], 
                            duration_ms, fetch_resulter_type=fetch_result.get('fetcher_type'))
                 
                 # Save raw HTML
@@ -187,10 +200,10 @@ class ProductionCrawler:
                     self.results.append(parsed.data)
                     self.state.state['extracted_count'] += 1
                     
-                    log_parsing(self.logger, url, 1, len(parsed.errors))
+                    self.log_parsing(self.logger, url, 1, len(parsed.errors))
                     self.compliance.log_scrape_event(url, "success", 1, personal_data)
                 else:
-                    log_parsing(self.logger, url, 0, len(parsed.errors))
+                    self.log_parsing(self.logger, url, 0, len(parsed.errors))
                     self.compliance.log_scrape_event(url, "no_data_extracted")
                 
                 self.state.state['visited'].add(url)

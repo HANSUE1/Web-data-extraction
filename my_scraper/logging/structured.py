@@ -61,14 +61,14 @@ class StructuredLogger:
     def critical(self, msg: str, **kwargs):
         self._log(self.logger.critical, msg, **kwargs)
     
-    def _log(self, method, msg: str, **kwargs):
+    def _log(self, log_method, msg: str, **kwargs):
         extra = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "logger": self.name,
             "message": msg,
             **kwargs
         }
-        method(json.dumps(extra) if self.json_format else msg, extra={"structured": extra})
+        log_method(json.dumps(extra) if self.json_format else msg, extra={"structured": extra})
     
     def audit(self, action: str, url: str = None, data: Dict[str, Any] = None, **kwargs):
         """Log to audit trail for compliance."""
