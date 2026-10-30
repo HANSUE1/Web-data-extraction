@@ -6,9 +6,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from my_scraper.config.settings import CrawlConfig, DEFAULT_CONFIG
-from my_scraper.core.crawler import ProductionCrawler
+try:
+    from my_scraper.config.settings import CrawlConfig, DEFAULT_CONFIG
+    from my_scraper.core.crawler import ProductionCrawler
+except Exception:
+    from config.settings import CrawlConfig, DEFAULT_CONFIG
+    from core.crawler import ProductionCrawler
 
 
 def main():

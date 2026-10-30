@@ -7,8 +7,15 @@ from urllib.parse import urljoin
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from my_scraper.config.settings import CrawlConfig, FetcherType, ExportFormat
-from my_scraper.core.crawler import ProductionCrawler
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from my_scraper.config.settings import CrawlConfig, FetcherType, ExportFormat
+    from my_scraper.core.crawler import ProductionCrawler
+except Exception:
+    from config.settings import CrawlConfig, FetcherType, ExportFormat
+    from core.crawler import ProductionCrawler
 
 
 class QuickBooksScraper:
