@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Generated at runtime
+logs/
+data/
+output/
+outputs/
+extracted_all/
+*.db

@@ -1,154 +1,127 @@
-"""Multi-format storage: JSON, CSV, JSONL, databases, blob storage."""
-import json
+"""Multi-format storage: JSON, JSONL, CSV and SQLite."""
 import csv
-import os
-from pathlib import Path
-from typing import List, Dict, Any
+import json
+import sqlite3
+from contextlib import closing
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+Item = Dict[str, Any]
 
 
-class JSONExporter:
-    """Export to JSON format."""
-    
+def _flatten(value: Any) -> Any:
+    """Encode nested values as JSON so flat formats keep them readable and reversible."""
+    return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
+
+
+def _all_keys(items: List[Item]) -> List[str]:
+    return sorted({key for item in items for key in item})
+
+
+class FileExporter:
+    """Base class: picks the output path, subclasses write the file."""
+
+    extension = ""
+    skip_when_empty = False
+
     def __init__(self, output_dir: str = "./output"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-    
-    def export(self, items: List[Dict[str, Any]], filename: str = None):
-        if filename is None:
-            filename = f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        filepath = self.output_dir / filename
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(items, f, indent=2, ensure_ascii=False)
-        
-        return str(filepath)
 
-
-class JSONLExporter:
-    """Export to JSONL format."""
-    
-    def __init__(self, output_dir: str = "./output"):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-    
-    def export(self, items: List[Dict[str, Any]], filename: str = None):
-        if filename is None:
-            filename = f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
-        
-        filepath = self.output_dir / filename
-        with open(filepath, 'w', encoding='utf-8') as f:
-            for item in items:
-                f.write(json.dumps(item, ensure_ascii=False) + '\n')
-        
-        return str(filepath)
-
-
-class CSVExporter:
-    """Export to CSV format."""
-    
-    def __init__(self, output_dir: str = "./output"):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-    
-    def export(self, items: List[Dict[str, Any]], filename: str = None):
-        if not items:
+    def export(self, items: List[Item], filename: str = None) -> Optional[str]:
+        if self.skip_when_empty and not items:
             return None
-        
-        if filename is None:
-            filename = f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        
-        filepath = self.output_dir / filename
-        
-        # Get all unique keys
-        all_keys = set()
-        for item in items:
-            all_keys.update(item.keys())
-        fieldnames = sorted(list(all_keys))
-        
-        with open(filepath, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+        filepath = self.output_dir / filename if filename else self._new_path()
+        self._write(items, filepath)
+        return str(filepath)
+
+    def _new_path(self) -> Path:
+        """Timestamped path that never overwrites an export from the same second."""
+        stem = f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        filepath = self.output_dir / f"{stem}.{self.extension}"
+        counter = 1
+        while filepath.exists():
+            filepath = self.output_dir / f"{stem}_{counter}.{self.extension}"
+            counter += 1
+        return filepath
+
+    def _write(self, items: List[Item], filepath: Path):
+        raise NotImplementedError
+
+
+class JSONExporter(FileExporter):
+    """Export to JSON format."""
+
+    extension = "json"
+
+    def _write(self, items, filepath):
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2, ensure_ascii=False)
+
+
+class JSONLExporter(FileExporter):
+    """Export to JSONL format."""
+
+    extension = "jsonl"
+
+    def _write(self, items, filepath):
+        with open(filepath, "w", encoding="utf-8") as f:
+            for item in items:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
+class CSVExporter(FileExporter):
+    """Export to CSV format."""
+
+    extension = "csv"
+    skip_when_empty = True
+
+    def _write(self, items, filepath):
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=_all_keys(items))
             writer.writeheader()
             for item in items:
-                writer.writerow(item)
-        
-        return str(filepath)
+                writer.writerow({key: _flatten(value) for key, value in item.items()})
 
 
-class DatabaseExporter:
-    """Export to databases (SQLite, PostgreSQL, MongoDB)."""
-    
-    def __init__(self, db_url: str = None):
-        self.db_url = db_url
-    
-    def export_sqlite(self, items: List[Dict[str, Any]], db_path: str, table_name: str):
-        """Export to SQLite."""
-        import sqlite3
-        
-        if not items:
-            return
-        
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # Create table with all columns
-        all_keys = set()
-        for item in items:
-            all_keys.update(item.keys())
-        columns = sorted(list(all_keys))
-        
-        cols_def = ', '.join([f'"{col}" TEXT' for col in columns])
-        cursor.execute(f'CREATE TABLE IF NOT EXISTS {table_name} ({cols_def})')
-        
-        # Insert data
-        placeholders = ', '.join(['?' for _ in columns])
-        for item in items:
-            values = [json.dumps(item.get(col)) if isinstance(item.get(col), (dict, list)) else item.get(col) for col in columns]
-            cursor.execute(f'INSERT INTO {table_name} VALUES ({placeholders})', values)
-        
-        conn.commit()
-        conn.close()
-    
-    def export_postgres(self, items: List[Dict[str, Any]], table_name: str):
-        """Export to PostgreSQL (placeholder)."""
-        try:
-            import psycopg2
-            # Implementation would go here
-            raise NotImplementedError("PostgreSQL export requires psycopg2 configuration")
-        except ImportError:
-            raise Exception("psycopg2 not installed")
-    
-    def export_mongodb(self, items: List[Dict[str, Any]], collection_name: str):
-        """Export to MongoDB (placeholder)."""
-        try:
-            import pymongo
-            raise NotImplementedError("MongoDB export requires pymongo configuration")
-        except ImportError:
-            raise Exception("pymongo not installed")
+class SQLiteExporter(FileExporter):
+    """Export to a SQLite database with one text column per field."""
+
+    extension = "db"
+    skip_when_empty = True
+    table_name = "items"
+
+    def _write(self, items, filepath):
+        columns = _all_keys(items)
+        names = ['"{}"'.format(column.replace('"', '""')) for column in columns]
+        definitions = ", ".join(f"{name} TEXT" for name in names)
+        placeholders = ", ".join("?" for _ in columns)
+
+        with closing(sqlite3.connect(filepath)) as conn, conn:
+            conn.execute(f'CREATE TABLE IF NOT EXISTS "{self.table_name}" ({definitions})')
+            conn.executemany(
+                f'INSERT INTO "{self.table_name}" ({", ".join(names)}) VALUES ({placeholders})',
+                [[_flatten(item.get(column)) for column in columns] for item in items],
+            )
 
 
 class StorageManager:
     """Unified storage manager."""
-    
+
+    EXPORTERS = {
+        "json": JSONExporter,
+        "jsonl": JSONLExporter,
+        "csv": CSVExporter,
+        "sqlite": SQLiteExporter,
+    }
+
     def __init__(self, config):
         self.config = config
-        self.json_exporter = JSONExporter()
-        self.jsonl_exporter = JSONLExporter()
-        self.csv_exporter = CSVExporter()
-        self.db_exporter = DatabaseExporter(config.storage.db_url)
-    
-    def export(self, items: List[Dict[str, Any]], formats: List = None):
+        self.exporters = {name: cls(config.output_dir) for name, cls in self.EXPORTERS.items()}
+
+    def export(self, items: List[Item], formats: List = None) -> Dict[str, Optional[str]]:
         """Export to all configured formats."""
         if formats is None:
             formats = self.config.export_formats
-        
-        results = {}
-        for fmt in formats:
-            if fmt.value == 'json':
-                results['json'] = self.json_exporter.export(items)
-            elif fmt.value == 'jsonl':
-                results['jsonl'] = self.jsonl_exporter.export(items)
-            elif fmt.value == 'csv':
-                results['csv'] = self.csv_exporter.export(items)
-        
-        return results
+        return {fmt.value: self.exporters[fmt.value].export(items) for fmt in formats}

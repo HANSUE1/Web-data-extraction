@@ -1,121 +1,128 @@
 """Politeness, robots.txt compliance, and rate limiting."""
-import time
-import random
-from urllib.robotparser import RobotFileParser
-from urllib.parse import urlparse
-from typing import Dict, Optional
-from collections import deque
 import asyncio
+import random
+import time
+from typing import Dict, Tuple
+from urllib.parse import urlparse
+from urllib.robotparser import RobotFileParser
+
+import aiohttp
+
+BACKOFF_STATUSES = (429, 503)
 
 
 class RobotsChecker:
-    """Respect robots.txt rules."""
-    
-    def __init__(self, user_agent: str = "*"):
+    """Respect robots.txt rules, following RFC 9309 for missing or unreachable files."""
+
+    FAILURE_TTL = 60  # seconds; an outage should not block a site for the full cache_ttl
+    FETCH_TIMEOUT = 10  # seconds
+
+    def __init__(self, user_agent: str = "*", cache_ttl: int = 3600):
         self.user_agent = user_agent
-        self._cache: Dict[str, RobotFileParser] = {}
-        self._cache_time: Dict[str, float] = {}
-        self.cache_ttl = 3600
-    
-    def is_allowed(self, url: str) -> bool:
+        self.cache_ttl = cache_ttl
+        self._cache: Dict[str, Tuple[RobotFileParser, float]] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+
+    async def is_allowed(self, url: str) -> bool:
         """Check if URL is allowed by robots.txt."""
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
-        
-        # Check cache
-        if base_url in self._cache:
-            if time.time() - self._cache_time[base_url] < self.cache_ttl:
-                rp = self._cache[base_url]
-                return rp.can_fetch(self.user_agent, url)
-        
-        # Fetch and parse robots.txt
+
+        # One fetch per site, even when many workers ask at the same moment.
+        async with self._locks.setdefault(base_url, asyncio.Lock()):
+            cached = self._cache.get(base_url)
+            if cached is None or time.monotonic() >= cached[1]:
+                rules, ttl = await self._fetch_rules(base_url)
+                cached = (rules, time.monotonic() + ttl)
+                self._cache[base_url] = cached
+
+        return cached[0].can_fetch(self.user_agent, url)
+
+    async def _fetch_rules(self, base_url: str) -> Tuple[RobotFileParser, int]:
+        """Download robots.txt without blocking the event loop."""
+        rules = RobotFileParser(f"{base_url}/robots.txt")
+        timeout = aiohttp.ClientTimeout(total=self.FETCH_TIMEOUT)
         try:
-            rp = RobotFileParser()
-            rp.set_url(f"{base_url}/robots.txt")
-            rp.read()
-            self._cache[base_url] = rp
-            self._cache_time[base_url] = time.time()
-            return rp.can_fetch(self.user_agent, url)
-        except Exception:
-            # If robots.txt can't be fetched, be conservative
-            return True
+            async with aiohttp.ClientSession(headers={"User-Agent": self.user_agent}, timeout=timeout) as session:
+                async with session.get(rules.url) as response:
+                    status = response.status
+                    body = await response.text(errors="replace")
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+            rules.disallow_all = True
+            return rules, self.FAILURE_TTL
+
+        if status in (401, 403) or status >= 500:
+            rules.disallow_all = True
+            return rules, self.FAILURE_TTL
+        if status >= 400:
+            rules.allow_all = True  # no robots.txt means no restrictions
+        else:
+            rules.parse(body.splitlines())
+        return rules, self.cache_ttl
 
 
 class RateLimiter:
-    """Per-domain rate limiting with sliding window."""
-    
-    def __init__(self, requests_per_second: float = 1.0, burst_size: int = 5):
-        self.requests_per_second = requests_per_second
-        self.burst_size = burst_size
-        self.min_interval = 1.0 / requests_per_second if requests_per_second > 0 else 1.0
-        self._windows: Dict[str, deque] = {}
-        self._last_request: Dict[str, float] = {}
-        self._lock = asyncio.Lock()
-    
+    """Per-domain pacing: requests to one domain are spaced at least one interval apart."""
+
+    MAX_BACKOFF_INTERVAL = 10.0  # seconds
+    RECOVERY_FACTOR = 0.9
+
+    def __init__(self, requests_per_second: float = 1.0):
+        self.base_interval = 1.0 / requests_per_second if requests_per_second > 0 else 1.0
+        self._intervals: Dict[str, float] = {}
+        self._next_slot: Dict[str, float] = {}
+
+    def interval_for(self, domain: str) -> float:
+        return self._intervals.get(domain, self.base_interval)
+
     async def acquire(self, domain: str):
-        """Acquire permission to make a request to domain."""
-        async with self._lock:
-            now = time.time()
-            
-            if domain not in self._windows:
-                self._windows[domain] = deque()
-                self._last_request[domain] = 0
-            
-            # Remove old entries
-            window = self._windows[domain]
-            while window and now - window[0] > 1.0:
-                window.popleft()
-            
-            # Check rate limit
-            if len(window) >= int(self.requests_per_second):
-                # Calculate wait time
-                oldest = window[0]
-                wait_time = 1.0 - (now - oldest)
-                if wait_time > 0:
-                    await asyncio.sleep(wait_time + random.uniform(0, 0.1))  # jitter
-                    now = time.time()
-            
-            # Enforce minimum interval
-            if now - self._last_request[domain] < self.min_interval:
-                wait_time = self.min_interval - (now - self._last_request[domain])
-                await asyncio.sleep(wait_time + random.uniform(0, 0.05))  # jitter
-                now = time.time()
-            
-            window.append(now)
-            self._last_request[domain] = now
-    
+        """Reserve the next slot for domain, then wait for it.
+
+        Reserving involves no await, so workers cannot race, and a wait on one
+        domain never holds up requests to another.
+        """
+        now = time.monotonic()
+        slot = max(now, self._next_slot.get(domain, 0.0))
+        self._next_slot[domain] = slot + self.interval_for(domain)
+        if slot > now:
+            await asyncio.sleep(slot - now + random.uniform(0, 0.05))  # jitter
+
     def backoff_on_error(self, domain: str, status_code: int):
-        """Reduce request rate on errors (429, 503)."""
-        if status_code in [429, 503]:
-            # Increase interval (slow down)
-            self.min_interval *= 2
-            self.min_interval = min(self.min_interval, 10.0)  # cap at 10s
+        """Slow down one domain when it signals overload (429, 503)."""
+        if status_code in BACKOFF_STATUSES:
+            limit = max(self.MAX_BACKOFF_INTERVAL, self.base_interval)
+            self._intervals[domain] = min(self.interval_for(domain) * 2, limit)
+
+    def recover(self, domain: str):
+        """Ease a slowed domain back towards the configured rate."""
+        if domain in self._intervals:
+            eased = self._intervals[domain] * self.RECOVERY_FACTOR
+            if eased <= self.base_interval:
+                del self._intervals[domain]
+            else:
+                self._intervals[domain] = eased
 
 
 class PolitenessManager:
     """Manage all politeness policies."""
-    
+
     def __init__(self, config):
-        self.robots_checker = RobotsChecker(config.robots.user_agent)
-        self.rate_limiter = RateLimiter(
-            config.rate_limit.requests_per_second,
-            config.rate_limit.burst_size
-        )
+        self.robots_checker = RobotsChecker(config.robots.user_agent, config.robots.cache_ttl)
+        self.rate_limiter = RateLimiter(config.rate_limit.requests_per_second)
         self.respect_robots = config.robots.respect
-    
+
     async def can_fetch(self, url: str) -> bool:
         """Check if URL can be fetched."""
-        if self.respect_robots:
-            if not self.robots_checker.is_allowed(url):
-                return False
-        return True
-    
+        return not self.respect_robots or await self.robots_checker.is_allowed(url)
+
     async def wait_for_slot(self, url: str):
         """Wait for rate limit slot."""
+        await self.rate_limiter.acquire(urlparse(url).netloc)
+
+    def handle_status(self, url: str, status_code: int):
+        """Adjust pacing for a domain based on a response status."""
         domain = urlparse(url).netloc
-        await self.rate_limiter.acquire(domain)
-    
-    def handle_error(self, url: str, status_code: int):
-        """Handle error responses."""
-        domain = urlparse(url).netloc
-        self.rate_limiter.backoff_on_error(domain, status_code)
+        if status_code in BACKOFF_STATUSES:
+            self.rate_limiter.backoff_on_error(domain, status_code)
+        elif status_code < 400:
+            self.rate_limiter.recover(domain)

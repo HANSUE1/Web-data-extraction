@@ -1,76 +1,118 @@
-import argparse, csv, json, os, sys
+"""Quick one-page extractor: repeating items by CSS selector, saved as JSON and CSV.
+
+Examples:
+    python scrape_simple.py --url https://quotes.toscrape.com/
+    python scrape_simple.py --url https://news.ycombinator.com/ --item .athing \
+        --field "title:.titleline a::text" --field "link:.titleline a::attr(href)"
+"""
+import argparse
+import csv
+import json
+import os
+import sys
+from pathlib import PurePosixPath
 from urllib.parse import urlparse
+
 import requests
 from parsel import Selector
 
-def ensure_dir(p):
-    os.makedirs(p, exist_ok=True)
-    return p
+HEADERS = {'User-Agent': 'simple-scraper/1.0'}
+TIMEOUT = 30
+QUOTES_API = 'https://quotes.toscrape.com/api/quotes'
+
 
 def save(items, outdir, base):
     if not items:
         print('Nothing extracted')
         return
+    os.makedirs(outdir, exist_ok=True)
     with open(os.path.join(outdir, f'{base}.json'), 'w', encoding='utf-8') as f:
         json.dump(items, f, indent=2, ensure_ascii=False)
-    keys = list(items[0].keys())
     with open(os.path.join(outdir, f'{base}.csv'), 'w', newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=keys)
-        w.writeheader()
-        w.writerows(items)
+        writer = csv.DictWriter(f, fieldnames=list(items[0]))
+        writer.writeheader()
+        writer.writerows(items)
     print(f'Saved {len(items)} items -> {outdir}')
+
 
 def scrape_quotes_api():
     items = []
     page = 1
-    while True:
-        r = requests.get(f'https://quotes.toscrape.com/api/quotes?page={page}', headers={'User-Agent': 'simple-scraper/1.0'}, timeout=30)
-        if r.status_code != 200: break
-        data = r.json()
-        for q in data.get('quotes', []):
-            items.append({'text': q.get('text'), 'author': q.get('author', {}).get('name'), 'tags': ', '.join(q.get('tags', []))})
-        if not data.get('has_next'): break
-        page += 1
+    with requests.Session() as session:
+        session.headers.update(HEADERS)
+        while True:
+            response = session.get(QUOTES_API, params={'page': page}, timeout=TIMEOUT)
+            if response.status_code != 200:
+                print(f'Stopped at page {page}: HTTP {response.status_code}', file=sys.stderr)
+                break
+            data = response.json()
+            for quote in data.get('quotes', []):
+                items.append({
+                    'text': quote.get('text'),
+                    'author': quote.get('author', {}).get('name'),
+                    'tags': ', '.join(quote.get('tags', [])),
+                })
+            if not data.get('has_next'):
+                break
+            page += 1
     return items
+
 
 def scrape_generic(url, item_sel, fields):
-    r = requests.get(url, headers={'User-Agent': 'simple-scraper/1.0'}, timeout=30)
-    r.raise_for_status()
-    sel = Selector(text=r.text)
+    response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    response.raise_for_status()
     items = []
-    for row in sel.css(item_sel):
+    for row in Selector(text=response.text).css(item_sel):
         obj = {}
-        for key, s in fields.items():
-            if '::attr(' in s:
-                attr = s.split('::attr(')[-1].rstrip(')')
-                base_sel = s.split('::attr(')[0]
-                obj[key] = row.css(base_sel + f'::attr({attr})').get()
-            else:
-                val = row.css(s).get()
-                obj[key] = val.strip() if isinstance(val, str) else val
-        if any(v for v in obj.values()): items.append(obj)
+        for key, selector in fields.items():
+            value = row.css(selector).get()
+            obj[key] = value.strip() if isinstance(value, str) else value
+        if any(obj.values()):
+            items.append(obj)
     return items
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--url', required=True)
-    p.add_argument('--item')
-    p.add_argument('--field', action='append')
-    p.add_argument('--api-quotes', action='store_true')
-    args = p.parse_args()
-    parsed = urlparse(args.url)
-    domain = parsed.netloc.replace(':', '_')
-    outdir = ensure_dir(os.path.join('outputs', domain))
-    base = os.path.basename(parsed.path).strip('/') or 'index'
-    if args.api_quotes or 'quotes.toscrape.com' in args.url:
-        items = scrape_quotes_api()
-    else:
-        if not args.item or not args.field:
-            print('Need --item and --field'); sys.exit(1)
-        fields = {}
-        for f in args.field:
-            if ':' in f: k,v=f.split(':',1); fields[k]=v
-        items = scrape_generic(args.url, args.item, fields)
-    save(items, outdir, base)
 
-if __name__=='__main__': main()
+def parse_fields(pairs, parser):
+    fields = {}
+    for pair in pairs:
+        key, separator, selector = pair.partition(':')
+        if not (key and separator and selector):
+            parser.error(f'--field must look like name:selector, got: {pair}')
+        fields[key] = selector
+    return fields
+
+
+def output_location(url):
+    """Return (directory, base filename) for a URL. /a/b/ and /a/b.html both give 'b'."""
+    parsed = urlparse(url)
+    outdir = os.path.join('outputs', parsed.netloc.replace(':', '_'))
+    return outdir, PurePosixPath(parsed.path).stem or 'index'
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Quick one-page extractor')
+    parser.add_argument('--url', required=True)
+    parser.add_argument('--item', help='CSS selector for each repeating item')
+    parser.add_argument('--field', action='append', help='name:selector, repeat for each field')
+    parser.add_argument('--api-quotes', action='store_true', help='Use the quotes.toscrape.com JSON API')
+    args = parser.parse_args()
+
+    # quotes.toscrape.com defaults to its API, unless selectors were given for the page itself.
+    use_quotes_api = args.api_quotes or ('quotes.toscrape.com' in args.url and not args.item)
+
+    if not use_quotes_api and not (args.item and args.field):
+        parser.error('--item and --field are required for this URL')
+
+    try:
+        if use_quotes_api:
+            items = scrape_quotes_api()
+        else:
+            items = scrape_generic(args.url, args.item, parse_fields(args.field, parser))
+    except requests.RequestException as e:
+        sys.exit(f'Request failed: {e}')
+
+    save(items, *output_location(args.url))
+
+
+if __name__ == '__main__':
+    main()

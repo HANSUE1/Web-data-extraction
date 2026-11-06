@@ -1,247 +1,285 @@
 """Production-grade crawler orchestrator."""
 import asyncio
-import time
-from typing import List, Dict, Any, Optional
-from urllib.parse import urlparse, urljoin
-from collections import deque
+import json
 import os
+import time
+from collections import deque
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from urllib.parse import urldefrag, urljoin, urlparse
+
+from parsel import Selector
+
+from my_scraper.compliance.manager import ComplianceManager
+from my_scraper.fetcher.smart_fetcher import RawHtmlStorage, SmartFetcher
+from my_scraper.logutil import StructuredLogger, log_parsing, log_request
+from my_scraper.parser.universal_parser import ParsedItem, UniversalParser
+from my_scraper.storage.multi_format import StorageManager
+from my_scraper.utils.politeness import PolitenessManager
+from my_scraper.utils.retry import HttpStatusError, RetryManager
+
+CHECKPOINT_EVERY_PAGES = 100
+
+QueuedUrl = Tuple[str, int]  # (url, depth)
 
 
 class CrawlState:
     """Persist crawl state for checkpointing."""
-    
+
     def __init__(self, state_file: str = "./data/crawl_state.json"):
-        self.state_file = state_file
-        Path(state_file).parent.mkdir(parents=True, exist_ok=True)
-        self.state = {
-            'visited': set(),
-            'frontier': deque(),
-            'extracted_count': 0,
-            'start_time': None,
-            'last_checkpoint': None
+        self.state_file = Path(state_file)
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.visited: Set[str] = set()
+        self.frontier: deque = deque()
+        self.extracted_count = 0
+        self.start_time: Optional[float] = None
+
+    def save(self, in_flight: Iterable[QueuedUrl] = ()):
+        """Save state to disk. URLs still in flight are stored as not yet done."""
+        in_flight = list(in_flight)
+        busy = {url for url, _ in in_flight}
+        snapshot = {
+            "visited": sorted(self.visited - busy),
+            "frontier": in_flight + list(self.frontier),
+            "extracted_count": self.extracted_count,
+            "start_time": self.start_time,
+            "last_checkpoint": time.time(),
         }
-    
-    def save(self):
-        """Save state to disk."""
-        import json
-        state_copy = {
-            'visited': list(self.state['visited']),
-            'frontier': list(self.state['frontier']),
-            'extracted_count': self.state['extracted_count'],
-            'start_time': self.state['start_time'],
-            'last_checkpoint': time.time()
-        }
-        with open(self.state_file, 'w') as f:
-            json.dump(state_copy, f)
-    
-    def load(self):
-        """Load state from disk."""
-        import json
+        # Write then swap, so a crash mid-save cannot corrupt the previous checkpoint.
+        temp_file = self.state_file.with_suffix(".tmp")
+        temp_file.write_text(json.dumps(snapshot), encoding="utf-8")
+        os.replace(temp_file, self.state_file)
+
+    def load(self) -> bool:
+        """Load state from disk. Returns False if there is no usable checkpoint."""
         try:
-            with open(self.state_file, 'r') as f:
-                state_copy = json.load(f)
-            self.state['visited'] = set(state_copy['visited'])
-            self.state['frontier'] = deque(state_copy['frontier'])
-            self.state['extracted_count'] = state_copy['extracted_count']
-            self.state['start_time'] = state_copy['start_time']
-            self.state['last_checkpoint'] = state_copy['last_checkpoint']
+            snapshot = json.loads(self.state_file.read_text(encoding="utf-8"))
+            self.visited = set(snapshot["visited"])
+            self.frontier = deque((url, depth) for url, depth in snapshot["frontier"])
+            self.extracted_count = snapshot["extracted_count"]
+            self.start_time = snapshot["start_time"]
             return True
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError, KeyError, TypeError):
             return False
 
 
 class ProductionCrawler:
     """Production-grade crawler orchestrator."""
-    
+
     def __init__(self, config):
         self.config = config
         self.state = CrawlState()
-        self.results = []
-        self.semaphore = asyncio.Semaphore(config.concurrency.max_workers)
-        
-# Import components
-        from my_scraper.utils.politeness import PolitenessManager
-        from my_scraper.utils.retry import RetryManager
-        from my_scraper.fetcher.smart_fetcher import SmartFetcher, RawHtmlStorage
-        from my_scraper.parser.universal_parser import UniversalParser
-        from my_scraper.storage.multi_format import StorageManager
-        from my_scraper.compliance.manager import ComplianceManager
-        try:
-            from my_scraper.logging import StructuredLogger, log_request, log_parsing
-            import sys
-            print(f"SUCCESS: Imported log_request={log_request}, log_parsing={log_parsing}", file=sys.stderr)
-        except ImportError as e:
-            import sys
-            print(f"LOGGING IMPORT ERROR: {e}", file=sys.stderr)
-            StructuredLogger = None
-            log_request = None
-            log_parsing = None
-        
+        self.results: List[Dict[str, Any]] = []
+        self.exports: Dict[str, Optional[str]] = {}
+        self._queued: Set[str] = set()
+        self._domain_limits: Dict[str, asyncio.Semaphore] = {}
+
         self.politeness = PolitenessManager(config)
         self.retry_manager = RetryManager(config)
         self.fetcher = SmartFetcher(config)
         self.parser = UniversalParser(config.required_fields)
         self.storage = StorageManager(config)
         self.compliance = ComplianceManager(config)
-        try:
-            if StructuredLogger is None:
-                raise Exception('x')
-            self.logger = StructuredLogger(getattr(config,'name','scraper'), getattr(getattr(config,'logging',object()),'log_file',None), getattr(getattr(config,'logging',object()),'audit_log',None), getattr(getattr(config,'logging',object()),'json_format',True))
-        except Exception:
-            class Dummy:
-                def info(self,*a,**kw): pass
-                def warning(self,*a,**kw): pass
-                def error(self,*a,**kw): pass
-                def debug(self,*a,**kw): pass
-                def critical(self,*a,**kw): pass
-                def audit(self,*a,**kw): pass
-            self.logger = Dummy()
         self.raw_storage = RawHtmlStorage(config.storage.blob_storage_path)
-        
-        # Store log functions as instance attributes
-        self.log_request = log_request
-        self.log_parsing = log_parsing
-    
-    async def crawl(self, start_urls: List[str] = None, selectors: Dict[str, str] = None):
-        """Start crawling."""
+        self.logger = StructuredLogger(
+            config.name,
+            log_file=config.logging.log_file,
+            json_format=config.logging.json_format,
+            level=config.logging.level,
+        )
+
+    async def crawl(self, start_urls: List[str] = None, selectors: Dict[str, str] = None,
+                    resume: bool = False) -> List[Dict[str, Any]]:
+        """Crawl from start_urls, or continue the saved crawl when resume is True.
+
+        Results are exported and state saved even if the crawl is interrupted.
+        """
         if start_urls is None:
             start_urls = self.config.start_urls
-        
-        self.state.state['start_time'] = time.time()
+        if selectors is None:
+            selectors = self.config.selectors
+
+        started = time.time()
+        if resume and self.state.load():
+            self._queued = {url for url, _ in self.state.frontier}
+            self.logger.info("crawl_resumed", visited=len(self.state.visited), queued=len(self._queued))
+        if self.state.start_time is None:
+            self.state.start_time = started
+
         self.logger.info("crawl_started", start_urls=start_urls, max_depth=self.config.max_depth)
-        
-        # Initialize frontier
         for url in start_urls:
-            if url not in self.state.state['visited']:
-                self.state.state['frontier'].append((url, 0))  # (url, depth)
-        
-        # Crawl
-        tasks = []
-        while self.state.state['frontier'] and len(self.results) < self.config.max_pages:
-            url, depth = self.state.state['frontier'].popleft()
-            
-            if url in self.state.state['visited']:
-                continue
-            
-            if depth > self.config.max_depth:
-                continue
-            
-            if urlparse(url).netloc not in self.config.allowed_domains and self.config.allowed_domains:
-                continue
-            
-            # Create task
-            task = asyncio.create_task(self.process_url(url, depth, selectors))
-            tasks.append(task)
-            
-            # Limit concurrent tasks
-            if len(tasks) >= self.config.concurrency.max_workers:
-                await asyncio.gather(*tasks, return_exceptions=True)
-                tasks = []
-            
-            # Checkpoint periodically
-            if len(self.results) % 100 == 0:
-                self.state.save()
-                self.logger.info("checkpoint_saved", extracted_count=len(self.results))
-        
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Final checkpoint
-        self.state.save()
-        
-        # Export results
-        export_results = self.storage.export(self.results)
-        
-        self.logger.info("crawl_completed", 
-                        total_items=len(self.results),
-                        duration_seconds=round(time.time() - self.state.state['start_time'], 2),
-                        exports=export_results)
-        
-        # Generate compliance report
-        compliance_report = self.compliance.generate_compliance_report()
-        self.logger.info("compliance_report", **compliance_report)
-        
+            self._enqueue(url, 0)
+
+        try:
+            await self._run_frontier(selectors)
+        finally:
+            self.state.save()
+            self.exports = self.storage.export(self.results)
+            self.logger.info("crawl_completed",
+                             total_items=len(self.results),
+                             pages_visited=len(self.state.visited),
+                             duration_seconds=round(time.time() - started, 2),
+                             exports=self.exports)
+            self.logger.info("compliance_report", **self.compliance.generate_compliance_report())
+            await self.close()
+
         return self.results
-    
-    async def process_url(self, url: str, depth: int, selectors: Dict[str, str] = None):
-        """Process a single URL."""
-        async with self.semaphore:
-            try:
-                # Compliance check
-                self.compliance.validate_url(url)
-                
-                # Politeness checks
-                if not await self.politeness.can_fetch(url):
-                    self.logger.warning("robots_disallowed", url=url)
-                    self.compliance.log_scrape_event(url, "robots_disallowed")
+
+    async def close(self):
+        """Release network resources."""
+        await self.fetcher.close()
+
+    async def _run_frontier(self, selectors: Dict[str, str]):
+        """Keep up to max_workers pages in flight until no work is left.
+
+        A finished page can add new links, so the crawl is only over once the
+        frontier is empty AND nothing is still running.
+        """
+        in_flight: Dict[asyncio.Task, QueuedUrl] = {}
+        pages_since_checkpoint = 0
+
+        try:
+            while True:
+                self._schedule(in_flight, selectors)
+                if not in_flight:
                     return
-                
-                await self.politeness.wait_for_slot(url)
-                
-                # Fetch
-                start_time = time.time()
-                fetch_result = await self.retry_manager.retry_http(
-                    self.fetcher.fetch, url
-                )
-                duration_ms = (time.time() - start_time) * 1000
-                
-                self.log_request(self.logger, url, 'GET', fetch_result['status_code'], 
-                           duration_ms, fetch_resulter_type=fetch_result.get('fetcher_type'))
-                
-                # Save raw HTML
-                if self.config.storage.save_raw_html:
-                    html_pointer = self.raw_storage.save(url, fetch_result['content'])
-                
-                # Parse
-                parsed = self.parser.parse(fetch_result, selectors)
-                
-                if parsed.data and parsed.data != {'html': fetch_result['content']}:
-                    # Check for personal data
-                    personal_data = self.compliance.scan_for_personal_data(parsed.data)
-                    
-                    # Data minimization
-                    if self.config.required_fields:
-                        parsed.data = self.compliance.check_data_minimization(parsed.data, self.config.required_fields)
-                    
-                    self.results.append(parsed.data)
-                    self.state.state['extracted_count'] += 1
-                    
-                    self.log_parsing(self.logger, url, 1, len(parsed.errors))
-                    self.compliance.log_scrape_event(url, "success", 1, personal_data)
-                else:
-                    self.log_parsing(self.logger, url, 0, len(parsed.errors))
-                    self.compliance.log_scrape_event(url, "no_data_extracted")
-                
-                self.state.state['visited'].add(url)
-                
-                # Follow links if depth allows
+
+                done, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    url, _ = in_flight.pop(task)
+                    if not task.cancelled() and task.exception() is not None:
+                        self.logger.error("worker_crashed", url=url, error=repr(task.exception()))
+
+                pages_since_checkpoint += len(done)
+                if pages_since_checkpoint >= CHECKPOINT_EVERY_PAGES:
+                    pages_since_checkpoint = 0
+                    self.state.save(in_flight.values())
+                    self.logger.info("checkpoint_saved", extracted_count=len(self.results))
+        finally:
+            # Interrupted: put unfinished pages back so a resumed crawl picks them up.
+            for task, (url, depth) in in_flight.items():
+                task.cancel()
+                self.state.visited.discard(url)
+                self.state.frontier.appendleft((url, depth))
+            if in_flight:
+                await asyncio.gather(*in_flight, return_exceptions=True)
+
+    def _schedule(self, in_flight: Dict[asyncio.Task, QueuedUrl], selectors: Dict[str, str]):
+        """Start tasks from the frontier up to the concurrency and page limits."""
+        frontier = self.state.frontier
+        visited = self.state.visited
+
+        while (frontier and len(in_flight) < self.config.concurrency.max_workers
+               and len(visited) < self.config.max_pages):
+            url, depth = frontier.popleft()
+            self._queued.discard(url)
+
+            if url in visited or depth > self.config.max_depth or not self._in_scope(url):
+                continue
+
+            visited.add(url)  # marked now so no other worker can pick up the same page
+            in_flight[asyncio.create_task(self.process_url(url, depth, selectors))] = (url, depth)
+
+    def _in_scope(self, url: str) -> bool:
+        allowed = self.config.allowed_domains
+        return not allowed or urlparse(url).netloc in allowed
+
+    def _enqueue(self, url: str, depth: int):
+        if url not in self.state.visited and url not in self._queued:
+            self._queued.add(url)
+            self.state.frontier.append((url, depth))
+
+    async def fetch_page(self, url: str) -> Optional[Dict[str, Any]]:
+        """Fetch one URL through the full compliance, politeness and retry pipeline.
+
+        Every outcome other than a usable page is logged and audited here, and
+        returns None.
+        """
+        try:
+            self.compliance.validate_url(url)
+        except ValueError as e:
+            self.logger.warning("url_blocked", url=url, reason=str(e))
+            self.compliance.log_scrape_event(url, "blocked", error=str(e))
+            return None
+
+        if not await self.politeness.can_fetch(url):
+            self.logger.warning("robots_disallowed", url=url)
+            self.compliance.log_scrape_event(url, "robots_disallowed")
+            return None
+
+        await self.politeness.wait_for_slot(url)
+
+        start_time = time.time()
+        try:
+            fetch_result = await self.retry_manager.retry_http(
+                self.fetcher.fetch, url,
+                on_status=lambda status: self.politeness.handle_status(url, status),
+            )
+        except HttpStatusError as e:
+            self.logger.error("http_error", url=url, status=e.status)
+            self.compliance.log_scrape_event(url, "http_error", error=str(e))
+            return None
+
+        status = fetch_result["status_code"]
+        log_request(self.logger, url, "GET", status, (time.time() - start_time) * 1000,
+                    fetcher_type=fetch_result.get("fetcher_type"))
+
+        if status >= 400:
+            self.compliance.log_scrape_event(url, "http_error", error=f"HTTP {status}")
+            return None
+
+        if self.config.storage.save_raw_html:
+            self.raw_storage.save(url, fetch_result["content"])
+
+        return fetch_result
+
+    async def process_url(self, url: str, depth: int, selectors: Dict[str, str] = None):
+        """Fetch a page, store what it yields and queue its links."""
+        domain = urlparse(url).netloc
+        limit = self._domain_limits.setdefault(
+            domain, asyncio.Semaphore(self.config.concurrency.max_per_domain)
+        )
+
+        async with limit:
+            try:
+                fetch_result = await self.fetch_page(url)
+                if fetch_result is None:
+                    return
+
+                self._store(url, self.parser.parse(fetch_result, selectors))
+
                 if depth < self.config.max_depth and selectors:
-                    self.extract_links(fetch_result['content'], url, depth)
-                
+                    self.extract_links(fetch_result["content"], fetch_result.get("final_url", url), depth)
+
             except Exception as e:
                 self.logger.error("url_processing_failed", url=url, error=str(e))
                 self.compliance.log_scrape_event(url, "failed", error=str(e))
-                self.politeness.handle_error(url, 500)
-    
+
+    def _store(self, url: str, parsed: ParsedItem):
+        """Keep a parsed item if it holds real data, and audit the outcome."""
+        has_data = set(parsed.data) != {"html"} and any(value not in (None, "") for value in parsed.data.values())
+        if not has_data:
+            log_parsing(self.logger, url, 0, len(parsed.errors))
+            self.compliance.log_scrape_event(url, "no_data_extracted")
+            return
+
+        data = {**parsed.data, "url": url}
+        personal_data = self.compliance.scan_for_personal_data(parsed.data)
+        if self.config.required_fields:
+            data = self.compliance.check_data_minimization(data, self.config.required_fields)
+
+        self.results.append(data)
+        self.state.extracted_count += 1
+        log_parsing(self.logger, url, 1, len(parsed.errors))
+        self.compliance.log_scrape_event(url, "success", 1, personal_data)
+
     def extract_links(self, content: str, base_url: str, depth: int):
         """Extract and enqueue links."""
-        from parsel import Selector
-        sel = Selector(text=content)
-        links = sel.css('a::attr(href)').getall()
-        
-        for link in links:
+        for link in Selector(text=content).css("a::attr(href)").getall():
             try:
-                full_url = urljoin(base_url, link)
-                parsed = urlparse(full_url)
-                
-                if parsed.scheme not in ['http', 'https']:
-                    continue
-                
-                if self.config.allowed_domains and parsed.netloc not in self.config.allowed_domains:
-                    continue
-                
-                if full_url not in self.state.state['visited']:
-                    self.state.state['frontier'].append((full_url, depth + 1))
-            except:
+                full_url = urldefrag(urljoin(base_url, link)).url
+            except ValueError:  # malformed href
                 continue
+
+            if urlparse(full_url).scheme in ("http", "https") and self._in_scope(full_url):
+                self._enqueue(full_url, depth + 1)

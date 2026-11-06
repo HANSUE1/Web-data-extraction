@@ -1,8 +1,7 @@
 """Production-grade scraper configuration with all safety defaults."""
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
 from enum import Enum
-import os
+from typing import Any, Dict, List, Optional
 
 
 class FetcherType(Enum):
@@ -17,7 +16,7 @@ class ExportFormat(Enum):
     JSON = "json"
     CSV = "csv"
     JSONL = "jsonl"
-    PARQUET = "parquet"
+    SQLITE = "sqlite"
 
 
 @dataclass
@@ -32,8 +31,6 @@ class RobotsConfig:
 class RateLimitConfig:
     """Rate limiting configuration."""
     requests_per_second: float = 1.0
-    burst_size: int = 5
-    use_sliding_window: bool = True
     redis_url: Optional[str] = None
 
 
@@ -54,7 +51,6 @@ class ConcurrencyConfig:
     """Concurrency configuration."""
     max_workers: int = 10
     max_per_domain: int = 2
-    use_semaphore: bool = True
 
 
 @dataclass
@@ -67,6 +63,7 @@ class BrowserConfig:
     viewport_width: int = 1920
     viewport_height: int = 1080
     user_data_dir: Optional[str] = None
+    javascript_enabled: bool = True
 
 
 @dataclass
@@ -102,6 +99,18 @@ class ComplianceConfig:
     takedown_email: Optional[str] = None
 
 
+_SECTIONS = {
+    "robots": RobotsConfig,
+    "rate_limit": RateLimitConfig,
+    "retry": RetryConfig,
+    "concurrency": ConcurrencyConfig,
+    "browser": BrowserConfig,
+    "storage": StorageConfig,
+    "logging": LoggingConfig,
+    "compliance": ComplianceConfig,
+}
+
+
 @dataclass
 class CrawlConfig:
     """Main crawler configuration."""
@@ -112,7 +121,9 @@ class CrawlConfig:
     max_pages: int = 10000
     fetcher: FetcherType = FetcherType.AUTO
     export_formats: List[ExportFormat] = field(default_factory=lambda: [ExportFormat.JSONL])
-    
+    output_dir: str = "./output"
+    selectors: Dict[str, str] = field(default_factory=dict)
+
     # Sub-configs
     robots: RobotsConfig = field(default_factory=RobotsConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
@@ -122,14 +133,23 @@ class CrawlConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     compliance: ComplianceConfig = field(default_factory=ComplianceConfig)
-    
+
     # Required schema
     required_fields: List[str] = field(default_factory=list)
     personal_data_fields: List[str] = field(default_factory=list)
-    
-    class Config:
-        env_prefix = "SCRAPER_"
 
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any]) -> "CrawlConfig":
+        """Build a config from plain JSON data, converting nested sections and enums.
 
-# Default configuration
-DEFAULT_CONFIG = CrawlConfig()
+        Unknown keys raise TypeError so a typo in a config file is not silently ignored.
+        """
+        values = dict(raw)
+        for name, section in _SECTIONS.items():
+            if name in values:
+                values[name] = section(**values[name])
+        if "fetcher" in values:
+            values["fetcher"] = FetcherType(values["fetcher"])
+        if "export_formats" in values:
+            values["export_formats"] = [ExportFormat(fmt) for fmt in values["export_formats"]]
+        return cls(**values)
