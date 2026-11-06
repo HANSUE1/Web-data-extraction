@@ -11,6 +11,7 @@ import pytest
 from my_scraper.compliance.manager import ComplianceManager
 from my_scraper.config.settings import CrawlConfig, ExportFormat, FetcherType
 from my_scraper.fetcher.smart_fetcher import SmartFetcher, StaticFetcher
+from my_scraper.parser import documents
 from my_scraper.parser.universal_parser import ContentTypeDetector, UniversalParser
 from my_scraper.storage.multi_format import CSVExporter
 from my_scraper.utils.politeness import RateLimiter, RobotsChecker
@@ -274,42 +275,41 @@ def test_detects_content_type_from_header():
 
 
 def test_parses_json_responses():
-    parsed = UniversalParser().parse(
+    page = UniversalParser().parse_page(
         {"url": "u", "content": "[1, 2]", "headers": {"content-type": "application/json"}})
-    assert parsed.data == {"data": [1, 2]}
+    assert page.items == [{"data": [1, 2], "source": "json"}]
 
 
 def test_parses_css_and_xpath_selectors():
-    parsed = UniversalParser().parse(
+    page = UniversalParser().parse_page(
         {"url": "u", "content": "<h1> Hi </h1><p>there</p>"},
         {"css": "h1::text", "xpath": "//p/text()", "missing": ".nope::text"},
     )
-    assert parsed.data == {"css": "Hi", "xpath": "there", "missing": None}
+    assert page.items == [{"css": "Hi", "xpath": "there", "missing": None}]
 
 
 def test_bad_selector_is_reported_not_raised():
-    parsed = UniversalParser().parse({"url": "u", "content": "<p>x</p>"}, {"bad": "a[[["})
-    assert parsed.data == {"bad": None}
-    assert len(parsed.errors) == 1
+    page = UniversalParser().parse_page({"url": "u", "content": "<p>x</p>"}, {"bad": "a[[["})
+    assert page.items == [{"bad": None}]
+    assert len(page.errors) == 1
 
 
-def test_pdf_receives_raw_bytes_and_failure_is_reported():
-    parser = UniversalParser()
+def test_pdf_receives_raw_bytes_and_failure_is_reported(monkeypatch):
     received = []
 
     def fake_parse(body):
         received.append(body)
         raise ValueError("damaged")
 
-    parser.pdf_parser.parse = fake_parse
-    parsed = parser.parse({
+    monkeypatch.setattr(documents, "parse_pdf", fake_parse)
+    page = UniversalParser().parse_page({
         "url": "u", "content": "garbled", "body": b"%PDF-\xff",
         "headers": {"content-type": "application/pdf"},
     })
 
     assert received == [b"%PDF-\xff"]
-    assert parsed.data == {}
-    assert "damaged" in parsed.errors[0]
+    assert page.items == []
+    assert "damaged" in page.errors[0]
 
 
 # --- Compliance --------------------------------------------------------------

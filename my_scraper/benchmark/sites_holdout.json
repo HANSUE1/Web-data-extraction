@@ -1,0 +1,63 @@
+[
+  {"name": "cbc", "group": "news", "url": "https://www.cbc.ca/news", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "dw", "group": "news", "url": "https://www.dw.com/en/top-stories/s-9097", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "france24", "group": "news", "url": "https://www.france24.com/en/", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "abc-au", "group": "news", "url": "https://www.abc.net.au/news", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "the-hindu", "group": "news", "url": "https://www.thehindu.com/", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "ars-technica", "group": "news", "url": "https://arstechnica.com/", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+
+  {"name": "cloudflare-blog", "group": "blog", "url": "https://blog.cloudflare.com/", "expect": "list", "min_items": 5, "min_title": 15, "need": ["url"]},
+  {"name": "smashing-mag", "group": "blog", "url": "https://www.smashingmagazine.com/articles/", "expect": "list", "min_items": 5, "min_title": 15, "need": ["url"]},
+  {"name": "css-tricks", "group": "blog", "url": "https://css-tricks.com/", "expect": "list", "min_items": 5, "min_title": 15, "need": ["url"]},
+  {"name": "paulgraham", "group": "blog", "url": "http://www.paulgraham.com/articles.html", "expect": "list", "min_items": 20, "min_title": 5, "need": ["url"]},
+
+  {"name": "adafruit", "group": "shop", "url": "https://www.adafruit.com/category/17", "expect": "list", "min_items": 5, "min_title": 10},
+  {"name": "sparkfun", "group": "shop", "url": "https://www.sparkfun.com/categories/top", "expect": "any", "min_items": 3},
+  {"name": "thriftbooks", "group": "shop", "url": "https://www.thriftbooks.com/", "expect": "any", "min_items": 3},
+  {"name": "gymshark", "group": "shop", "url": "https://www.gymshark.com/collections/all-products/mens", "expect": "list", "min_items": 5, "min_title": 8},
+  {"name": "rei", "group": "shop", "url": "https://www.rei.com/c/camping-and-hiking", "expect": "any", "min_items": 3},
+  {"name": "bhphoto", "group": "shop", "url": "https://www.bhphotovideo.com/", "expect": "any", "min_items": 3},
+
+  {"name": "who-news", "group": "government", "url": "https://www.who.int/news", "expect": "list", "min_items": 5, "min_title": 20},
+  {"name": "nih-news", "group": "government", "url": "https://www.nih.gov/news-events/news-releases", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "un-org", "group": "government", "url": "https://www.un.org/en/", "expect": "any", "min_items": 3},
+  {"name": "census-gov", "group": "government", "url": "https://www.census.gov/", "expect": "any", "min_items": 1},
+  {"name": "europa-eu", "group": "government", "url": "https://european-union.europa.eu/index_en", "expect": "any", "min_items": 1},
+
+  {"name": "slashdot", "group": "forum", "url": "https://slashdot.org/", "expect": "list", "min_items": 5, "min_title": 15},
+  {"name": "metafilter", "group": "forum", "url": "https://www.metafilter.com/", "expect": "list", "min_items": 5, "min_title": 10},
+  {"name": "tildes", "group": "forum", "url": "https://tildes.net/", "expect": "list", "min_items": 5, "min_title": 10, "need": ["url"]},
+
+  {"name": "vue-docs", "group": "spa", "url": "https://vuejs.org/guide/introduction.html", "expect": "document", "min_items": 1},
+  {"name": "react-docs", "group": "spa", "url": "https://react.dev/learn", "expect": "document", "min_items": 1},
+  {"name": "svelte-site", "group": "spa", "url": "https://svelte.dev/docs/svelte/overview", "expect": "document", "min_items": 1},
+  {"name": "angular-docs", "group": "spa", "url": "https://angular.dev/overview", "expect": "document", "min_items": 1},
+  {"name": "nextjs-docs", "group": "spa", "url": "https://nextjs.org/docs", "expect": "document", "min_items": 1},
+
+  {"name": "basketball-ref", "group": "data", "url": "https://www.basketball-reference.com/leagues/NBA_2024_standings.html", "expect": "table", "min_items": 10},
+  {"name": "iana-tld", "group": "data", "url": "https://www.iana.org/domains/root/db", "expect": "table", "min_items": 100},
+  {"name": "x-rates", "group": "data", "url": "https://www.x-rates.com/table/?from=USD&amount=1", "expect": "table", "min_items": 8},
+  {"name": "timeanddate", "group": "data", "url": "https://www.timeanddate.com/worldclock/", "expect": "any", "min_items": 5},
+  {"name": "coinmarketcap", "group": "data", "url": "https://coinmarketcap.com/", "expect": "any", "min_items": 10},
+
+  {"name": "remoteok", "group": "jobs", "url": "https://remoteok.com/", "expect": "list", "min_items": 10, "min_title": 8},
+  {"name": "python-jobs", "group": "jobs", "url": "https://www.python.org/jobs/", "expect": "list", "min_items": 5, "min_title": 8},
+
+  {"name": "serious-eats", "group": "recipe", "url": "https://www.seriouseats.com/recipes", "expect": "list", "min_items": 5, "min_title": 12},
+  {"name": "simplyrecipes", "group": "recipe", "url": "https://www.simplyrecipes.com/", "expect": "list", "min_items": 5, "min_title": 12},
+
+  {"name": "elpais-es", "group": "language", "url": "https://elpais.com/", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "corriere-it", "group": "language", "url": "https://www.corriere.it/", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "yomiuri-ja", "group": "language", "url": "https://www.yomiuri.co.jp/", "expect": "list", "min_items": 5, "min_title": 15, "need": ["url"]},
+  {"name": "kompas-id", "group": "language", "url": "https://www.kompas.com/", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "rbc-ru", "group": "language", "url": "https://www.rbc.ru/", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+  {"name": "chosun-ko", "group": "language", "url": "https://www.chosun.com/", "expect": "list", "min_items": 5, "min_title": 15, "need": ["url"]},
+  {"name": "globo-pt", "group": "language", "url": "https://www.globo.com/", "expect": "list", "min_items": 5, "min_title": 20, "need": ["url"]},
+
+  {"name": "gnu-software", "group": "old-web", "url": "https://www.gnu.org/software/software.html", "expect": "any", "min_items": 5},
+  {"name": "rfc-index", "group": "old-web", "url": "https://www.rfc-editor.org/rfc-index.html", "expect": "any", "min_items": 100},
+
+  {"name": "world-bank-api", "group": "file", "url": "https://api.worldbank.org/v2/country?format=json&per_page=50", "expect": "any", "min_items": 20},
+  {"name": "nasa-rss", "group": "file", "url": "https://www.nasa.gov/feed/", "expect": "list", "min_items": 5, "min_title": 15, "need": ["url"]},
+  {"name": "gh-api", "group": "file", "url": "https://api.github.com/repos/python/cpython/releases?per_page=10", "expect": "any", "min_items": 5}
+]

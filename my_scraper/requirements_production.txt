@@ -2,13 +2,21 @@
 aiohttp>=3.9.0
 parsel>=1.8.1
 lxml>=4.9.0
+w3lib>=2.1.0                # URLs and character encodings
+protego>=0.3.0              # robots.txt with wildcards, which Python's own parser ignores
+charset-normalizer>=3.3.0   # guessing undeclared encodings
 requests>=2.31.0
+certifi>=2024.2.2           # trusted certificates, see utils/http.py
 pydantic>=2.5.0
+extruct>=0.17.0             # JSON-LD, microdata and OpenGraph
+trafilatura>=2.0.0          # main text and Markdown
+pypdf>=4.0.0                # PDF text
+python-docx>=1.1.0          # Word documents
+openpyxl>=3.1.0             # Excel files
 brotli>=1.1.0
 
 # Optional: only needed by the feature named
-playwright>=1.40.0          # browser fallback (also run: playwright install chromium)
-PyPDF2>=3.0.0               # PDF text extraction
+playwright>=1.40.0          # JavaScript sites (also run: playwright install chromium)
 redis>=5.0.0                # queueing.persistent_queue.RedisQueue
 prometheus-client>=0.19.0   # monitoring.metrics
 

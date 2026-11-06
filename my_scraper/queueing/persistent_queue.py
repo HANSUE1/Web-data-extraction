@@ -289,7 +289,7 @@ class ETagCache:
 
         content_hash = None
         if content:
-            content_hash = hashlib.sha256(content.encode() if isinstance(content, str) else content).hexdigest()
+            content_hash = hashlib.sha256(content.encode("utf-8", "replace") if isinstance(content, str) else content).hexdigest()
 
         with connect(self.db_path) as conn:
             conn.execute("""
@@ -331,7 +331,7 @@ class ContentDeduplicator:
 
     def is_duplicate(self, content: str, url: str = "") -> bool:
         """Check if content is duplicate, remembering url as where it was first seen."""
-        content_hash = hashlib.sha256(content.encode() if isinstance(content, str) else content).hexdigest()
+        content_hash = hashlib.sha256(content.encode("utf-8", "replace") if isinstance(content, str) else content).hexdigest()
 
         with connect(self.db_path) as conn:
             row = conn.execute(

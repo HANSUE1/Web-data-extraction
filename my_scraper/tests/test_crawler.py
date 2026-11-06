@@ -251,7 +251,7 @@ def test_interrupted_crawl_saves_results_and_resumes(site, make_config):
     site.add("/slow", "slow")
     _, results = run(make_config(), resume=True)
 
-    assert titles(results) == ["later", "slow"]
+    assert titles(results) == ["home", "later", "slow"]  # one complete result set
     assert site.hits["/"] == 1  # finished pages are not fetched again
     assert len(list(Path("output").glob("*.jsonl"))) == 2  # the resume keeps the first export
 

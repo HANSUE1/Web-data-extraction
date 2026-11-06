@@ -26,7 +26,7 @@ def clean_price(value: Optional[str]) -> Optional[str]:
 
 def parse_product(html: str, url: str) -> Dict[str, Any]:
     """Extract one book from a books.toscrape.com product page."""
-    sel = Selector(text=html)
+    sel = Selector(text=html, type="html")
 
     def table_row(number: int) -> Optional[str]:
         return sel.css(f"table.table tr:nth-child({number}) td::text").get()
@@ -93,7 +93,7 @@ class QuickBooksScraper:
             if fetch_result is None:
                 break
 
-            sel = Selector(text=fetch_result["content"])
+            sel = Selector(text=fetch_result["content"], type="html")
             product_links = sel.css("article.product_pod h3 a::attr(href)").getall()
             if not product_links:
                 break

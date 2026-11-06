@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import PurePosixPath
 from urllib.parse import urlparse
+from urllib.robotparser import RobotFileParser
 
 import requests
 from parsel import Selector
@@ -19,6 +20,22 @@ from parsel import Selector
 HEADERS = {'User-Agent': 'simple-scraper/1.0'}
 TIMEOUT = 30
 QUOTES_API = 'https://quotes.toscrape.com/api/quotes'
+
+
+def allowed_by_robots(url):
+    """Apply robots.txt the same way as the main crawler: if unsure, don't fetch."""
+    parsed = urlparse(url)
+    try:
+        response = requests.get(f'{parsed.scheme}://{parsed.netloc}/robots.txt', headers=HEADERS, timeout=TIMEOUT)
+    except requests.RequestException:
+        return False
+    if response.status_code in (401, 403) or response.status_code >= 500:
+        return False
+    if response.status_code >= 400:
+        return True  # no robots.txt means no restrictions
+    rules = RobotFileParser()
+    rules.parse(response.text.splitlines())
+    return rules.can_fetch(HEADERS['User-Agent'], url)
 
 
 def save(items, outdir, base):
@@ -102,6 +119,9 @@ def main():
 
     if not use_quotes_api and not (args.item and args.field):
         parser.error('--item and --field are required for this URL')
+
+    if not allowed_by_robots(QUOTES_API if use_quotes_api else args.url):
+        sys.exit('robots.txt does not allow this URL')
 
     try:
         if use_quotes_api:

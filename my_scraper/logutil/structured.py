@@ -23,7 +23,8 @@ class JsonFormatter(logging.Formatter):
 class StructuredLogger:
     """Logger that attaches key/value fields to every message."""
 
-    def __init__(self, name: str, log_file: str = None, json_format: bool = True, level: str = "INFO"):
+    def __init__(self, name: str, log_file: str = None, json_format: bool = True, level: str = "INFO",
+                 console: bool = True):
         self.name = name
         self.json_format = json_format
         self.logger = logging.getLogger(name)
@@ -33,12 +34,13 @@ class StructuredLogger:
             self.logger.removeHandler(handler)
             handler.close()
 
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(
-            JsonFormatter() if json_format
-            else logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        )
-        self.logger.addHandler(console_handler)
+        if console:
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setFormatter(
+                JsonFormatter() if json_format
+                else logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            )
+            self.logger.addHandler(console_handler)
 
         if log_file:
             Path(log_file).parent.mkdir(parents=True, exist_ok=True)

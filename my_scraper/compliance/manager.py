@@ -2,6 +2,7 @@
 import json
 import re
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Set
 from urllib.parse import urlparse
@@ -37,6 +38,8 @@ class ComplianceManager:
         # Track scraped URLs and data
         self.scraped_urls = []
         self.personal_data_found = []
+        self.status_counts: Counter = Counter()
+        self.first_errors: Dict[str, str] = {}
 
     def _load_blocklist(self) -> Set[str]:
         if not self.blocklist_file.exists():
@@ -91,6 +94,10 @@ class ComplianceManager:
     def log_scrape_event(self, url: str, status: str, items_count: int = 0,
                          personal_data: List[str] = None, error: str = None):
         """Log scrape event to audit trail."""
+        self.status_counts[status] += 1
+        if error:
+            self.first_errors.setdefault(status, error)
+
         if not self.config.compliance.audit_all_requests:
             return
 

@@ -63,7 +63,7 @@ def site():
         asyncio.set_event_loop(loop)
         app = web.Application()
         app.router.add_route("*", "/{tail:.*}", test_site.handle)
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(app, shutdown_timeout=0.2)
         loop.run_until_complete(runner.setup())
         tcp = web.TCPSite(runner, "127.0.0.1", 0)
         loop.run_until_complete(tcp.start())

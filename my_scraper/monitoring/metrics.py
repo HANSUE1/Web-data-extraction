@@ -4,7 +4,6 @@ import hmac
 import json
 from typing import Any, Dict
 
-import aiohttp
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
@@ -15,6 +14,7 @@ from prometheus_client import (
     generate_latest,
 )
 
+from my_scraper.utils.http import create_session
 from my_scraper.utils.timeutil import utc_now_iso
 
 
@@ -111,7 +111,7 @@ class WebhookNotifier:
 
     async def _get_session(self):
         if self.session is None:
-            self.session = aiohttp.ClientSession()
+            self.session = create_session()
         return self.session
 
     def _sign_payload(self, body: bytes) -> str:

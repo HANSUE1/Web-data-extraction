@@ -59,11 +59,12 @@ class BrowserConfig:
     enabled: bool = True
     headless: bool = True
     timeout: int = 30000
-    wait_until: str = "networkidle"
+    wait_until: str = "domcontentloaded"  # the fetcher then waits for the content itself to settle
     viewport_width: int = 1920
     viewport_height: int = 1080
     user_data_dir: Optional[str] = None
     javascript_enabled: bool = True
+    expand_rounds: int = 8  # most scrolls and load-more presses per page. 0 turns this off
 
 
 @dataclass
@@ -84,6 +85,7 @@ class LoggingConfig:
     log_file: str = "./logs/scraper.log"
     audit_log: str = "./logs/audit.log"
     include_request_details: bool = True
+    console: bool = True
 
 
 @dataclass
@@ -122,7 +124,21 @@ class CrawlConfig:
     fetcher: FetcherType = FetcherType.AUTO
     export_formats: List[ExportFormat] = field(default_factory=lambda: [ExportFormat.JSONL])
     output_dir: str = "./output"
+
+    # What to extract. With neither set, items are found automatically on every page.
     selectors: Dict[str, str] = field(default_factory=dict)
+    item_selector: Optional[str] = None  # one item per match, selectors relative to it
+    examples: Dict[str, str] = field(default_factory=dict)  # values to learn selectors from
+    include_markdown: bool = False
+
+    # Which pages to visit
+    use_sitemap: bool = False
+    discover: bool = False  # also use feeds and public platform APIs
+    follow_pagination: bool = True  # next-page links don't use up max_depth
+    include_patterns: List[str] = field(default_factory=list)  # regexes a link must match
+    exclude_patterns: List[str] = field(default_factory=list)  # regexes a link must not match
+
+    incremental: bool = False  # on repeat runs, skip pages that have not changed
 
     # Sub-configs
     robots: RobotsConfig = field(default_factory=RobotsConfig)

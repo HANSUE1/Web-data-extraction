@@ -1,11 +1,16 @@
 """Run the real entry points as subprocesses, the way a user would."""
+import asyncio
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
+from aiohttp import web
+
+from my_scraper.tests.conftest import html_page
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,6 +47,67 @@ def test_cli_crawls_and_exports(site, cli):
     items = [json.loads(line) for line in exported[0].read_text(encoding="utf-8").splitlines()]
     assert sorted(item["heading"] for item in items) == ["home", "page a"]
     assert len(list(Path("results").glob("*.csv"))) == 1
+
+
+def test_cli_summary_says_why_nothing_was_extracted(site):
+    site.add_raw("/robots.txt", "down", "text/plain", status=500)
+
+    result = cli_as_module("--urls", site.url + "/")
+
+    assert result.returncode == 0, result.stderr
+    assert "Extracted 0 items" in result.stdout
+    assert "robots_unreachable: 1 (first: robots.txt returned HTTP 500)" in result.stdout
+
+
+def test_cli_finds_items_without_any_selectors(site):
+    cards = "".join(f'<div class="c"><h3><a href="/p{i}">Product {i}</a></h3><b>$5.00</b></div>' for i in range(4))
+    site.add_raw("/", f"<html><body>{cards}</body></html>", "text/html")
+
+    result = cli_as_module("--urls", site.url + "/", "--max-depth", "0", "--rate-limit", "100")
+
+    assert result.returncode == 0, result.stderr
+    assert "Extracted 4 items" in result.stdout
+
+
+def test_cli_rejects_item_without_fields_and_bad_patterns():
+    assert "needs at least one --selector" in cli_as_module("--urls", "http://x.test/", "--item", ".a").stderr
+    assert "invalid pattern" in cli_as_module("--urls", "http://x.test/", "--include", "(").stderr
+
+
+def test_resume_after_the_process_is_killed(site):
+    pages = [f"/p{i}" for i in range(40)]
+    body = html_page("x")
+
+    async def slow(request):
+        await asyncio.sleep(0.05)
+        return web.Response(text=body.replace("<h1>x", f"<h1>{request.path}"), content_type="text/html")
+
+    site.add("/", "home", links=pages)
+    for path in pages:
+        site.pages[path] = slow
+
+    args = ["--urls", site.url + "/", "--selector", "title=h1::text", "--rate-limit", "100"]
+    env = dict(os.environ, PYTHONPATH=str(REPO_ROOT), PYTHONDONTWRITEBYTECODE="1")
+    process = subprocess.Popen([sys.executable, "-m", "my_scraper.cli.main", *args], env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 30
+    while sum(site.hits[path] for path in pages) < 15 and time.time() < deadline:
+        time.sleep(0.01)
+    process.kill()  # no chance to clean up, like a crash or power cut
+    process.wait()
+
+    assert not list(Path("output").glob("*.jsonl"))
+    fetched_before_kill = sum(site.hits[path] for path in pages)
+    assert 15 <= fetched_before_kill < len(pages)
+
+    result = cli_as_module(*args, "--resume")
+
+    assert result.returncode == 0, result.stderr
+    exported = next(Path("output").glob("*.jsonl")).read_text(encoding="utf-8").splitlines()
+    titles = [json.loads(line)["title"] for line in exported]
+    assert len(titles) == 41
+    assert len(set(titles)) == 41  # nothing lost, nothing doubled
+    assert site.hits["/"] == 1  # the finished start page was not fetched again
 
 
 def test_cli_loads_a_nested_config_file(site):
@@ -137,6 +203,17 @@ def test_scrape_simple_extracts_items(site):
     ]
 
 
+def test_scrape_simple_obeys_robots(site):
+    site.add_raw("/robots.txt", "User-agent: *\nDisallow: /\n", "text/plain")
+    site.add("/", "home")
+
+    result = simple_scraper("--url", site.url + "/", "--item", "h1", "--field", "t:h1::text")
+
+    assert result.returncode == 1
+    assert "robots.txt does not allow" in result.stderr
+    assert site.hits["/"] == 0
+
+
 def test_scrape_simple_rejects_malformed_field(site):
     result = simple_scraper("--url", site.url + "/", "--item", ".r", "--field", "noselector")
 
@@ -153,6 +230,7 @@ def test_scrape_simple_on_quotes_site_honours_selectors(monkeypatch, extra_args,
     import scrape_simple
 
     used = []
+    monkeypatch.setattr(scrape_simple, "allowed_by_robots", lambda url: True)
     monkeypatch.setattr(scrape_simple, "scrape_quotes_api", lambda: used.append("api") or [])
     monkeypatch.setattr(scrape_simple, "scrape_generic", lambda *a: used.append("selectors") or [])
     monkeypatch.setattr(sys, "argv", ["x", "--url", "https://quotes.toscrape.com/", *extra_args])
