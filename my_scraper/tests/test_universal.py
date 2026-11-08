@@ -134,6 +134,33 @@ def test_same_title_on_different_links_is_not_a_list():
     assert item["source"] == "document"
 
 
+def test_tables_with_the_same_columns_are_one_table():
+    def table(start):
+        rows = "".join(f"<tr><td>Name {i}</td><td>Town {i}</td><td>${i}.00</td></tr>" for i in range(start, start + 4))
+        return f"<table><thead><tr><th>Name</th><th>Town</th><th>Due</th></tr></thead><tbody>{rows}</tbody></table>"
+
+    items = extract(listing(f"<h2>First</h2>{table(0)}<h2>Second</h2>{table(4)}"))
+
+    assert [item["Name"] for item in items] == [f"Name {i}" for i in range(8)]
+    assert {item["source"] for item in items} == {"table"}
+
+
+def test_microdata_gains_the_fields_its_table_shows():
+    rows = "".join(
+        f'<tr itemscope itemtype="https://schema.org/Product"><td>00{i}</td><td itemprop="name">Gadget {i}</td>'
+        f'<td>Tools</td><td>${i}9.99</td></tr>' for i in range(5))
+    html = listing(f"<table><thead><tr><th>ID</th><th>Name</th><th>Category</th><th>Price</th></tr></thead>"
+                   f"<tbody>{rows}</tbody></table>")
+
+    items = extract(html)
+
+    assert len(items) == 5
+    assert items[1]["title"] == "Gadget 1"
+    assert items[1]["Price"] == "$19.99"
+    assert items[1]["Category"] == "Tools"
+    assert items[1]["source"] == "microdata"
+
+
 def test_grid_split_into_rows_is_one_list():
     def row(start):
         cells = "".join(f'<div class="cell"><h3>Item {i}</h3><p>Detail {i}</p></div>' for i in range(start, start + 3))

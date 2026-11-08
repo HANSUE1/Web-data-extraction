@@ -66,5 +66,10 @@
   {"name": "herokuapp-dynamic", "group": "javascript", "url": "https://the-internet.herokuapp.com/dynamic_loading/2", "expect": "any", "min_items": 1, "contains": "Hello World!"},
   {"name": "course-js-render", "group": "javascript", "url": "https://www.scrapingcourse.com/javascript-rendering", "expect": "list", "min_items": 12, "min_title": 8, "need": ["url", "price"], "contains": "Chaz Kangeroo"},
   {"name": "course-infinite", "group": "javascript", "url": "https://www.scrapingcourse.com/infinite-scrolling", "expect": "list", "min_items": 40, "min_title": 8, "need": ["url", "price"]},
-  {"name": "course-load-more", "group": "javascript", "url": "https://www.scrapingcourse.com/button-click", "expect": "list", "min_items": 40, "min_title": 8, "need": ["url", "price"]}
+  {"name": "course-load-more", "group": "javascript", "url": "https://www.scrapingcourse.com/button-click", "expect": "list", "min_items": 40, "min_title": 8, "need": ["url", "price"]},
+  {"name": "course-table", "group": "practice", "url": "https://www.scrapingcourse.com/table-parsing", "expect": "list", "min_items": 15, "min_title": 4, "need": ["Price", "Category"], "contains": "Laptop"},
+  {"name": "course-pagination", "group": "practice", "url": "https://www.scrapingcourse.com/pagination", "expect": "list", "min_items": 12, "min_title": 8, "need": ["url", "price"]},
+  {"name": "herokuapp-tables", "group": "practice", "url": "https://the-internet.herokuapp.com/tables", "expect": "list", "min_items": 4, "min_title": 3, "need": ["Due", "Email"], "contains": "Conway"},
+  {"name": "herokuapp-large", "group": "practice", "url": "https://the-internet.herokuapp.com/large", "expect": "table", "min_items": 50, "contains": "50.50"},
+  {"name": "herokuapp-shadowdom", "group": "javascript", "url": "https://the-internet.herokuapp.com/shadowdom", "expect": "any", "min_items": 1, "contains": "Let's have some different text!"}
 ]

@@ -50,6 +50,7 @@ MIN_TITLE_LINK_LENGTH = 12
 MIN_DESCRIPTION_LENGTH = 30
 MAX_SHORT_FIELD = 60
 PREFERRED_TABLE_SHARE = 0.7
+MATCHED_SHARE = 0.8             # structured items take fields from the visible list only if this many match
 HEADERLESS_TABLE_MIN_ROWS = 5
 KEY_VALUE_TABLE_MAX_ROWS = 8
 DETAIL_PROSE = 500              # an article has this much running text of its own
@@ -639,9 +640,11 @@ def _table_headers(rows: List[Any]) -> Tuple[Optional[List[str]], List[Any]]:
 
 
 def _table_items(root, page_url: str) -> Tuple[List[Item], int]:
-    """Rows of the largest data table, keyed by column name."""
-    best_items: List[Item] = []
-    best_size = 0
+    """Rows of the largest data table, keyed by column name.
+
+    Tables with the same columns are one table split up, such as a list in sections.
+    """
+    by_columns: Dict[Tuple[str, ...], Tuple[List[Item], int]] = {}
 
     for table in root.xpath(".//table[not(.//table)]"):
         if is_hidden(table):
@@ -667,10 +670,11 @@ def _table_items(root, page_url: str) -> Tuple[List[Item], int]:
                 items.append(_table_row_item(headers, cells, row, page_url))
 
         size = sum(len(str(value)) for item in items for value in item.values())
-        if len(items) >= MIN_LIST_ITEMS and size > best_size:
-            best_items, best_size = items, size
+        if len(items) >= MIN_LIST_ITEMS:
+            earlier_items, earlier_size = by_columns.get(tuple(headers), ([], 0))
+            by_columns[tuple(headers)] = (earlier_items + items, earlier_size + size)
 
-    return best_items, best_size
+    return max(by_columns.values(), key=lambda found: found[1], default=([], 0))
 
 
 def _prose_length(root, excluded: List[Any]) -> int:
@@ -857,6 +861,20 @@ def _best_of(candidates: List[List[Item]]) -> List[Item]:
     return best
 
 
+def _fill_gaps(trusted: List[Item], visible: List[Item]) -> List[Item]:
+    """Add what the visible page shows, such as prices and links, to thin structured data.
+
+    Only when nearly every item has a twin with the same title, so nothing gets mismatched.
+    The structured values win wherever both have one.
+    """
+    twins = {item["title"]: item for item in visible if item.get("title")}
+    if not trusted or sum(1 for item in trusted if item.get("title") in twins) < MATCHED_SHARE * len(trusted):
+        return trusted
+    return [{**item, **{key: value for key, value in twins.get(item.get("title"), {}).items()
+                        if key != "source" and item.get(key) in (None, "", [])}}
+            for item in trusted]
+
+
 def _page_items(html: str, page_url: str, include_markdown: bool, errors: List[str]) -> List[Item]:
     root = Selector(text=html[:MAX_HTML_CHARS], type="html").root
     metadata = _attempt(_read_metadata, errors, {}, html, page_url)
@@ -869,6 +887,8 @@ def _page_items(html: str, page_url: str, include_markdown: bool, errors: List[s
         listing = _attempt(list_items, errors, [], root, page_url)
         embedded = _attempt(embedded_items, errors, [], html, page_url)
         items = _best_of([structured, listing, embedded])
+        if items is structured:
+            items = _fill_gaps(structured, listing)
         if not items and structured:
             items = structured
         if not items:
