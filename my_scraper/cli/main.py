@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from my_scraper.cli.explain import explain  # noqa: E402
 from my_scraper.config.settings import CrawlConfig, ExportFormat, FetcherType  # noqa: E402
 from my_scraper.core.crawler import ProductionCrawler  # noqa: E402
+from my_scraper.storage.changes import describe  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Never follow links matching this pattern. Repeat for several")
     parser.add_argument("--incremental", action="store_true",
                         help="Skip pages that have not changed since the last run")
+    parser.add_argument("--track", action="store_true",
+                        help="Compare with the last run of the same crawl: list new, changed and removed items")
     parser.add_argument("--resume", action="store_true", help="Continue the last interrupted crawl (pass the same --urls)")
     parser.add_argument("--quiet", action="store_true", help="Keep logs to the log file and show only the summary")
     parser.add_argument("--explain", action="store_true",
@@ -137,6 +140,8 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
         config.follow_pagination = False
     if args.incremental:
         config.incremental = True
+    if args.track:
+        config.track_changes = True
     if args.include:
         config.include_patterns = args.include
     if args.exclude:
@@ -165,6 +170,9 @@ def print_summary(crawler: ProductionCrawler, heading: str):
         print(f"  {fmt} export failed: {error}")
     if not crawler.results:
         print("  nothing extracted: --explain shows what each method found on the page")
+    if crawler.changes:
+        for line in describe(crawler.changes):
+            print(f"  {line}")
     if crawler.learned_selectors:
         item, fields = crawler.learned_selectors
         flags = " ".join(f'--selector "{name}={selector}"' for name, selector in fields.items())

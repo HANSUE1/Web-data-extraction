@@ -37,6 +37,9 @@ python -m my_scraper.cli.main --urls https://quotes.toscrape.com/ --item .quote 
 # Run again later and only collect what changed
 python -m my_scraper.cli.main --urls https://books.toscrape.com/ --incremental
 
+# Watch a site: list what is new, changed or gone since the last run
+python -m my_scraper.cli.main --urls https://books.toscrape.com/ --max-depth 0 --track
+
 # Continue after pressing Ctrl+C or a crash
 python -m my_scraper.cli.main --urls https://books.toscrape.com/ --resume
 
@@ -69,6 +72,7 @@ Results go to `./output`, logs to `./logs`, and crawl state to `./data`, all rel
 | `--max-pages`, `--max-depth` | Crawl limits. Every page attempted counts towards `--max-pages`. Next-page links don't use up depth, so `--max-depth 0` walks a whole listing. |
 | `--no-pagination` | Treat next-page links like any other link. |
 | `--incremental` | Skip pages that have not changed since the last run. |
+| `--track` | Compare with the last run of the same crawl and report new, changed and removed items. See "Tracking changes" under What the Crawler Does. |
 | `--rate-limit` | Requests per second, per domain. Fractions such as `0.5` work. |
 | `--export` | Any of `json`, `jsonl`, `csv`, `sqlite`. |
 | `--output-dir` | Where exports are written. |
@@ -151,6 +155,13 @@ Automatic extraction goes by page structure, so it can pick the wrong block on u
 **Repeat runs**
 - `--incremental` asks the server whether each page changed (ETag, Last-Modified), and compares content when the server can't say
 - Unchanged pages produce no items, so the export holds only what is new or changed. Their links are still followed, using the saved copy in `data/raw_html`, so `save_raw_html` should stay on
+
+**Tracking changes**
+- `--track` keeps a snapshot of each crawl's items in `data/snapshots`, one per set of start URLs and selectors
+- The next run writes `output/changes_<time>.json` listing new items, removed items, and changed items with each field's `before` and `after`, and the summary shows the first few, such as `price £51.77 -> £45.00`
+- Items are matched by their link plus their title, or the first column for table rows. Which method found an item is not counted as a change
+- An item is only reported removed when its page was read again and no longer has it. Items on pages that failed, were unchanged under `--incremental`, or fell outside `--max-pages` are kept in the snapshot, so a partial run never reports half the site as deleted
+- The first run only saves the baseline. Delete the snapshot file to start over
 
 **URLs and links**
 - Fragments, tracking parameters and session ids are removed, so one page is only crawled once. `#/` and `#!` routes are kept, as they are separate pages in single-page apps

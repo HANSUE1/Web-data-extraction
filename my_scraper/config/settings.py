@@ -139,6 +139,7 @@ class CrawlConfig:
     exclude_patterns: List[str] = field(default_factory=list)  # regexes a link must not match
 
     incremental: bool = False  # on repeat runs, skip pages that have not changed
+    track_changes: bool = False  # report what is new, changed or gone since the last run
 
     # Sub-configs
     robots: RobotsConfig = field(default_factory=RobotsConfig)

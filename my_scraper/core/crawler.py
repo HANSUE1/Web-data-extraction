@@ -29,6 +29,7 @@ from my_scraper.logutil import StructuredLogger, log_parsing, log_request
 from my_scraper.parser.by_example import learn_selectors
 from my_scraper.parser.universal_parser import ParsedPage, UniversalParser
 from my_scraper.queueing.persistent_queue import ETagCache
+from my_scraper.storage.changes import ChangeReport, snapshot_path, track
 from my_scraper.storage.multi_format import StorageManager
 from my_scraper.utils.politeness import PolitenessManager
 from my_scraper.utils.retry import HttpStatusError, RetryManager
@@ -134,6 +135,7 @@ class ProductionCrawler:
         self.state = CrawlState()
         self.results: List[Dict[str, Any]] = []
         self.exports: Dict[str, Optional[str]] = {}
+        self.changes: Optional[ChangeReport] = None
         self._selectors: Dict[str, str] = dict(config.selectors)
         self._item_selector: Optional[str] = config.item_selector
         self._examples: Dict[str, str] = dict(config.examples)
@@ -215,6 +217,8 @@ class ProductionCrawler:
             self.exports = self.storage.export(self.results)
             for fmt, error in self.storage.errors.items():
                 self.logger.error("export_failed", format=fmt, error=error)
+            if self.config.track_changes:
+                self._track_changes(start_urls)
             self.logger.info("crawl_completed",
                              total_items=len(self.results),
                              pages_visited=len(self.state.visited),
@@ -224,6 +228,20 @@ class ProductionCrawler:
             await self.close()
 
         return self.results
+
+    def _track_changes(self, start_urls: List[str]):
+        # Examples teach different selectors, so a crawl taught other values is a different crawl.
+        identity = {**self.config.selectors, **{f"example:{k}": v for k, v in self.config.examples.items()}}
+        path = snapshot_path(start_urls, identity, self.config.item_selector)
+        try:
+            self.changes = track(self.results, path, self.config.output_dir)
+        except OSError as e:
+            self.logger.error("change_tracking_failed", error=str(e))
+            return
+        report = self.changes
+        self.logger.info("changes_tracked", baseline=report.baseline, new=len(report.new),
+                         changed=len(report.changed), removed=len(report.removed),
+                         report=report.report_path, snapshot=report.snapshot_path)
 
     async def close(self):
         """Release network resources."""
