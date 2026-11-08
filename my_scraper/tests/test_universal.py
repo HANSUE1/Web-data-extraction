@@ -117,6 +117,23 @@ def test_product_cards_become_items():
     }
 
 
+def test_cards_loaded_twice_are_still_a_list():
+    # An infinite scroll that fires twice per scroll inserts the same batch twice.
+    cards = "".join(card(i) for i in range(6))
+    items = extract(listing(f"<ul>{cards}{cards}{cards}</ul>"))
+
+    assert [item["title"] for item in items] == [f"Full Title {i}" for i in range(6)]
+
+
+def test_same_title_on_different_links_is_not_a_list():
+    links = "".join(f'<div class="more"><a href="/post/{i}">Read more</a></div>' for i in range(8))
+    html = f"<html><body>{links}<h1>About us</h1>{FILLER}{FILLER}</body></html>"
+
+    [item] = extract(html)
+
+    assert item["source"] == "document"
+
+
 def test_grid_split_into_rows_is_one_list():
     def row(start):
         cells = "".join(f'<div class="cell"><h3>Item {i}</h3><p>Detail {i}</p></div>' for i in range(start, start + 3))

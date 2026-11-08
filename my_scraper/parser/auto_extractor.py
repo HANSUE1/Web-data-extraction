@@ -549,7 +549,11 @@ def _score_group(blocks: List[Any], page_url: str, area_text_length: int) -> Opt
     sample = blocks[:SCORED_BLOCKS_PER_GROUP]
     items = [_block_item(block, page_url) for block in sample]
     titles = [item.get("title") for item in items if item.get("title")]
-    if len(titles) < MIN_TITLE_COVERAGE * len(items) or len(set(titles)) < MIN_UNIQUE_TITLES * len(titles):
+    # A card inserted twice (an infinite scroll that fired twice) is still one item,
+    # but one title on many different links is a row of "Read more" buttons.
+    cards = {(item["title"], item.get("url") or position) for position, item in enumerate(items) if item.get("title")}
+    if (len(titles) < MIN_TITLE_COVERAGE * len(items)
+            or len({title for title, _ in cards}) < MIN_UNIQUE_TITLES * len(cards)):
         return None
 
     quality = sum(_block_quality(item, block) for item, block in zip(items, sample, strict=True)) / len(sample)
