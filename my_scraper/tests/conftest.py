@@ -54,6 +54,16 @@ class TestSite:
 
 @pytest.fixture
 def site():
+    yield from _serve()
+
+
+@pytest.fixture
+def other_site():
+    """A second site on its own port, so it counts as a different site."""
+    yield from _serve()
+
+
+def _serve():
     test_site = TestSite()
     loop = asyncio.new_event_loop()
     ready = threading.Event()

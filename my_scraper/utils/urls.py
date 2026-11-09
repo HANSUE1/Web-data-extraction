@@ -27,6 +27,7 @@ ASSET_EXTENSIONS = (
 ACTION_SEGMENTS = {
     "cart", "basket", "checkout", "logout", "logoff", "log-out", "signout", "sign-out", "signup", "sign-up",
     "register", "wishlist", "add-to-cart", "addtocart", "unsubscribe",
+    "sharer", "sharearticle", "intent",  # "share this" buttons that post to social networks
 }
 ACTION_PARAMS = {"add-to-cart", "add_to_cart", "addtocart", "replytocom", "logout", "action", "do"}
 PAGINATION_PARAMS = {"page", "p", "pg", "offset", "start", "skip", "paged"}

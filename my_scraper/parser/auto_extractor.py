@@ -43,6 +43,8 @@ MIN_PROSE_PARAGRAPH = 80
 MIN_MARKED_MAIN_SHARE = 0.15    # <main> is the page's own word for it
 MIN_GUESSED_MAIN_SHARE = 0.4    # an id that merely sounds right has to prove itself
 MAX_ITEM_SHARE = 0.35           # no single item holds a big part of a page
+OUTLIER_LIST_ITEMS = 5          # from this many items, one of them may be long
+PERMALINK = re.compile(r"\[[¶§#🔗]\]\([^)\s]*\)")  # the "link to this heading" mark beside headings
 MIN_LIST_COVERAGE = 0.4         # a list that is a small part of a page is just part of its text
 STRONG_LIST_QUALITY = 0.7       # unless its items are unmistakable, like product cards
 FULL_TITLE_LENGTH = 40          # a title this long scores as well as a title can
@@ -561,8 +563,11 @@ def _score_group(blocks: List[Any], page_url: str, area_text_length: int) -> Opt
     lengths = [len(_text(block)) for block in blocks]
     text_length = sum(lengths)
     # Page sections are not items. A short list must allow its items a bigger share each.
-    # A gallery of pictures has no text at all, which proves nothing either way.
-    if area_text_length and max(lengths) >= max(MAX_ITEM_SHARE, 2 / len(blocks)) * area_text_length:
+    # A gallery of pictures has no text at all, which proves nothing either way. In a
+    # longer list one item may run long, like one long quote, so the runner-up is judged.
+    ranked = sorted(lengths, reverse=True)
+    largest = ranked[1] if len(blocks) >= OUTLIER_LIST_ITEMS else ranked[0]
+    if area_text_length and largest >= max(MAX_ITEM_SHARE, 2 / len(blocks)) * area_text_length:
         return None
     score = len(blocks) * quality * quality * (1 + math.log1p(text_length / len(blocks)))
     if _signature(blocks[0])[1]:
@@ -797,8 +802,17 @@ def document_item(html: str, root, metadata: Dict[str, Any], page_url: str) -> I
 
 def page_markdown(html: str, page_url: str) -> Optional[str]:
     """The page's main content as Markdown."""
-    return trafilatura.extract(html, url=page_url, output_format="markdown",
-                               include_links=True, include_tables=True, include_images=False)
+    # Trafilatura resolves relative links against the site's root, not the page they are on,
+    # so "../glossary.html" and "#section" would point to the wrong places.
+    try:
+        tree = lxml_html.fromstring(html)
+        tree.make_links_absolute(page_url, resolve_base_href=True, handle_failures="ignore")
+        html = lxml_html.tostring(tree, encoding="unicode")
+    except (ValueError, lxml_html.etree.ParserError):
+        pass
+    markdown = trafilatura.extract(html, url=page_url, output_format="markdown",
+                                   include_links=True, include_tables=True, include_images=False)
+    return PERMALINK.sub("", markdown) if markdown else markdown
 
 
 # --- Entry point -------------------------------------------------------------

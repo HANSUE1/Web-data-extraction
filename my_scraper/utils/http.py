@@ -11,6 +11,7 @@ DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+MAX_HEADER_SIZE = 64 * 1024
 
 
 @lru_cache(maxsize=1)
@@ -28,5 +29,7 @@ def create_session(headers: Optional[Dict[str, str]] = None,
     connector = aiohttp.TCPConnector(ssl=ssl_context())
     options = {"timeout": timeout} if timeout else {}
     # trust_env honours HTTP_PROXY and friends, which company networks often require.
+    # Some sites send a Content-Security-Policy header far over aiohttp's 8 KB default; browsers accept it.
     return aiohttp.ClientSession(connector=connector, headers={**DEFAULT_HEADERS, **(headers or {})},
-                                 trust_env=True, **options)
+                                 trust_env=True, max_line_size=MAX_HEADER_SIZE,
+                                 max_field_size=MAX_HEADER_SIZE, **options)

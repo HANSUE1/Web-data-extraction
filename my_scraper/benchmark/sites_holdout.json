@@ -59,7 +59,7 @@
 
   {"name": "world-bank-api", "group": "file", "url": "https://api.worldbank.org/v2/country?format=json&per_page=50", "expect": "any", "min_items": 20},
   {"name": "nasa-rss", "group": "file", "url": "https://www.nasa.gov/feed/", "expect": "list", "min_items": 5, "min_title": 15, "need": ["url"]},
-  {"name": "gh-api", "group": "file", "url": "https://api.github.com/repos/python/cpython/releases?per_page=10", "expect": "any", "min_items": 5},
+  {"name": "gh-api", "group": "file", "url": "https://api.github.com/repos/python/cpython/tags?per_page=10", "expect": "any", "min_items": 5},
 
   {"name": "oxylabs-sandbox", "group": "practice", "url": "https://sandbox.oxylabs.io/products", "expect": "list", "min_items": 30, "min_title": 8, "need": ["url", "price"], "contains": "Ocarina of Time"},
   {"name": "toscrape-viewstate", "group": "practice", "url": "https://quotes.toscrape.com/search.aspx", "expect": "list", "min_items": 1, "min_title": 30, "contains": "process of our thinking"},

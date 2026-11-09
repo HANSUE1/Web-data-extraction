@@ -5,7 +5,7 @@ import json
 import os
 import re
 import time
-from collections import deque
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 from parsel import Selector
 
 from my_scraper.compliance.manager import ComplianceManager
+from my_scraper.core.frontier import QueuedUrl, SiteFrontier
 from my_scraper.core.links import base_url_of, forbids_following, next_page_links, page_links
 from my_scraper.core.page_checks import BLOCKED, CONSENT, LOGIN, classify_page
 from my_scraper.fetcher.discovery import (
@@ -50,7 +51,13 @@ RENDER_GAIN = 1.2              # a rendered copy must beat the static one by thi
 
 RECORD_SOURCES = {"list", "table", "csv", "xml", "xlsx", "json", "embedded", "network"}
 
-QueuedUrl = Tuple[str, int]  # (url, depth)
+QUEUE_PER_SITE_FACTOR = 4      # links kept waiting per site, as a multiple of its page budget
+OPEN_WEB_RENDER_ATTEMPTS = 1   # across thousands of sites, the browser is only tried once each
+OPEN_WEB_MAX_IDLE = 10         # seconds; with only slow sites left, stop and keep them for --resume
+
+
+def site_of(url: str) -> str:
+    return site_key(urlparse(url).netloc)
 
 
 class CrawlState:
@@ -61,7 +68,7 @@ class CrawlState:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.items_file = self.state_file.with_name(f"{self.state_file.stem}_items.jsonl")
         self.visited: Set[str] = set()
-        self.frontier: deque = deque()
+        self.frontier = SiteFrontier(site_of)
         self.extracted_count = 0
         self.start_time: Optional[float] = None
 
@@ -86,7 +93,7 @@ class CrawlState:
         try:
             snapshot = json.loads(self.state_file.read_text(encoding="utf-8"))
             self.visited = set(snapshot["visited"])
-            self.frontier = deque((url, depth) for url, depth in snapshot["frontier"])
+            self.frontier = SiteFrontier(site_of, ((url, depth) for url, depth in snapshot["frontier"]))
             self.extracted_count = snapshot["extracted_count"]
             self.start_time = snapshot["start_time"]
             return True
@@ -145,7 +152,10 @@ class ProductionCrawler:
         self._domain_limits: Dict[str, asyncio.Semaphore] = {}
         self._content_hashes: Set[str] = set()
         self._results_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        self._allowed_sites = {domain_key(domain) for domain in config.allowed_domains}
+        self._allowed_sites = set() if config.open_web else {domain_key(domain) for domain in config.allowed_domains}
+        self._site_pages: Counter = Counter()      # pages started per site, for max_pages_per_site
+        self._frontier_full_logged = False
+        self._render_limit = OPEN_WEB_RENDER_ATTEMPTS if config.open_web else MAX_RENDER_ATTEMPTS
         self._include = [re.compile(pattern) for pattern in config.include_patterns]
         self._exclude = [re.compile(pattern) for pattern in config.exclude_patterns]
         self._filter_variants: Dict[str, Set[tuple]] = {}
@@ -190,6 +200,7 @@ class ProductionCrawler:
         started = time.time()
         if resume and self.state.load():
             self._queued = {url for url, _ in self.state.frontier}
+            self._site_pages = Counter(site_of(url) for url in self.state.visited)
             for item in self.state.load_items():
                 self._add_result(item)
             self.logger.info("crawl_resumed", visited=len(self.state.visited), queued=len(self._queued),
@@ -278,11 +289,17 @@ class ProductionCrawler:
 
         try:
             while True:
-                self._schedule(in_flight)
+                wake = self._schedule(in_flight)
                 if not in_flight:
-                    return
+                    if wake is None:
+                        return
+                    if wake > OPEN_WEB_MAX_IDLE:
+                        self._park_slow_sites(wake)
+                        return
+                    await asyncio.sleep(wake)
+                    continue
 
-                done, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                done, _ = await asyncio.wait(in_flight, timeout=wake, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     url, _ = in_flight.pop(task)
                     if not task.cancelled() and task.exception() is not None:
@@ -302,14 +319,26 @@ class ProductionCrawler:
             if in_flight:
                 await asyncio.gather(*in_flight, return_exceptions=True)
 
-    def _schedule(self, in_flight: Dict[asyncio.Task, QueuedUrl]):
-        """Start tasks from the frontier up to the concurrency and page limits."""
+    def _schedule(self, in_flight: Dict[asyncio.Task, QueuedUrl]) -> Optional[float]:
+        """Start tasks from the frontier up to the concurrency and page limits.
+
+        On the open web a page is only started once its site is ready for another
+        request, so a site with a long Crawl-delay never ties up a worker. Returns
+        the seconds until a waiting site is ready, when only pacing holds pages back.
+        """
         frontier = self.state.frontier
         visited = self.state.visited
+        busy = Counter(urlparse(url).netloc for url, _ in in_flight.values())
 
         while (frontier and len(in_flight) < self.config.concurrency.max_workers
                and len(visited) < self.config.max_pages):
-            url, depth = frontier.popleft()
+            if self.config.open_web:
+                entry = frontier.popleft_ready(lambda waiting: self._ready_in(waiting, busy) == 0)
+                if entry is None:
+                    return self._next_ready(busy)
+                url, depth = entry
+            else:
+                url, depth = frontier.popleft()
             self._queued.discard(url)
 
             if url in visited or depth > self.config.max_depth or not self._in_scope(url):
@@ -317,9 +346,39 @@ class ProductionCrawler:
             if self._gave_up_on(url):
                 self._parked.append((url, depth))  # kept for a later --resume
                 continue
+            site = self._site_of(url)
+            if self._site_budget_spent(site):
+                for dropped, _ in frontier.drop_site(site):
+                    self._queued.discard(dropped)
+                continue
 
             visited.add(url)  # marked now so no other worker can pick up the same page
+            self._site_pages[site] += 1
+            busy[urlparse(url).netloc] += 1
             in_flight[asyncio.create_task(self.process_url(url, depth))] = (url, depth)
+        return None
+
+    def _ready_in(self, url: str, busy: Counter) -> Optional[float]:
+        """Seconds until url's site takes another request. None while it is at its worker limit."""
+        domain = urlparse(url).netloc
+        if busy[domain] >= self.config.concurrency.max_per_domain:
+            return None  # a page finishing frees it, and that wakes the scheduler anyway
+        return self.politeness.rate_limiter.ready_in(domain)
+
+    def _next_ready(self, busy: Counter) -> Optional[float]:
+        waits = [wait for wait in (self._ready_in(url, busy) for url in self.state.frontier.heads())
+                 if wait is not None]
+        return min(waits) if waits else None
+
+    def _park_slow_sites(self, wait: float):
+        """Only sites asking for long pauses are left. Keep their pages for --resume, not wait."""
+        frontier = self.state.frontier
+        sites, pages = frontier.site_count, len(frontier)
+        while frontier:
+            url, depth = frontier.popleft()
+            self._queued.discard(url)
+            self._parked.append((url, depth))
+        self.logger.info("slow_sites_parked", sites=sites, pages=pages, next_ready_seconds=round(wait))
 
     def _in_scope(self, url: str) -> bool:
         return not self._allowed_sites or site_key(urlparse(url).netloc) in self._allowed_sites
@@ -346,12 +405,33 @@ class ProductionCrawler:
         return True
 
     def _enqueue(self, url: str, depth: int):
-        if url not in self.state.visited and url not in self._queued:
-            self._queued.add(url)
-            self.state.frontier.append((url, depth))
+        if url in self.state.visited or url in self._queued or not self._room_for(url):
+            return
+        self._queued.add(url)
+        self.state.frontier.append((url, depth))
 
-    def _site_of(self, url: str) -> str:
-        return site_key(urlparse(url).netloc)
+    def _site_budget_spent(self, site: str) -> bool:
+        budget = self.config.max_pages_per_site
+        return budget is not None and self._site_pages[site] >= budget
+
+    def _room_for(self, url: str) -> bool:
+        """Whether the frontier should take another page. On the open web links never run out."""
+        site = self._site_of(url)
+        if self._site_budget_spent(site):
+            return False
+        budget = self.config.max_pages_per_site
+        if budget is not None and self.state.frontier.queued_for(site) >= budget * QUEUE_PER_SITE_FACTOR:
+            return False
+        if len(self.state.frontier) >= self.config.max_frontier:
+            if not self._frontier_full_logged:
+                self._frontier_full_logged = True
+                self.logger.warning("frontier_full", limit=self.config.max_frontier)
+            return False
+        return True
+
+    @staticmethod
+    def _site_of(url: str) -> str:
+        return site_of(url)
 
     def _gave_up_on(self, url: str) -> bool:
         return self._refusals.get(self._site_of(url), 0) >= MAX_CONSECUTIVE_REFUSALS
@@ -385,6 +465,8 @@ class ProductionCrawler:
             status = "robots_unreachable" if failure else "robots_disallowed"
             self.logger.warning(status, url=url, reason=failure)
             self.compliance.log_scrape_event(url, status, error=failure)
+            if failure and self.config.open_web:
+                self._note_refusal(url)  # a dead or unreachable site, of which the open web has many
             return None
 
         self._mention_slow_pacing(url)
@@ -583,7 +665,7 @@ class ProductionCrawler:
             return False
 
         site = self._site_of(url)
-        if self._render_attempts.get(site, 0) >= MAX_RENDER_ATTEMPTS:
+        if self._render_attempts.get(site, 0) >= self._render_limit:
             return False
         if not self._is_html(fetch_result):
             return False
@@ -597,8 +679,8 @@ class ProductionCrawler:
             return len(str(items[0].get("text", ""))) < WEAK_DOCUMENT_TEXT
 
         # A list with no next-page link may be the first batch of an infinite scroll.
-        # Checking costs a browser load, so it happens once per site.
-        if site in self._probed_sites:
+        # Checking costs a browser load, so it happens once per site, and not on the open web.
+        if site in self._probed_sites or self.config.open_web:
             return False
         self._probed_sites.add(site)
         return not next_page_links(Selector(text=fetch_result["content"], type="html"))
@@ -677,7 +759,9 @@ class ProductionCrawler:
         if self.config.follow_pagination and follow_pagination:
             self._enqueue_links(next_page_links(sel), base_url, depth)
 
-        if depth < self.config.max_depth:
+        if self.config.open_web:
+            self._enqueue_links(page_links(sel), base_url, depth, hop=True)
+        elif depth < self.config.max_depth:
             self._enqueue_links(page_links(sel), base_url, depth + 1)
 
     def _follow_discoveries(self, url: str, final_url: str, depth: int, fetch_result: Dict[str, Any], page: ParsedPage):
@@ -700,11 +784,18 @@ class ProductionCrawler:
             self.logger.info("sources_discovered", url=url, found=found)
             self._enqueue_links(found, final_url, 0)
 
-    def _enqueue_links(self, links: List[str], base_url: str, depth: int):
+    def _enqueue_links(self, links: List[str], base_url: str, depth: int, hop: bool = False):
+        """Queue links at depth. With hop, a link to another site is one level deeper and one
+        within the site stays at depth, so max_depth counts how far the crawl strays from its seeds.
+        """
+        home = self._site_of(base_url)
         for link in links:
             try:
                 url = normalize_url(urljoin(base_url, link.strip()))
             except ValueError:  # malformed href
                 continue
+            link_depth = depth + 1 if hop and self._site_of(url) != home else depth
+            if link_depth > self.config.max_depth:
+                continue
             if self._accept_link(url) and self._within_filter_budget(url):
-                self._enqueue(url, depth)
+                self._enqueue(url, link_depth)

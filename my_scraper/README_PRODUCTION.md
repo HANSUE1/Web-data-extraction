@@ -40,6 +40,9 @@ python -m my_scraper.cli.main --urls https://books.toscrape.com/ --incremental
 # Watch a site: list what is new, changed or gone since the last run
 python -m my_scraper.cli.main --urls https://books.toscrape.com/ --max-depth 0 --track
 
+# Crawl the open web: follow links to any site, at most 50 pages per site
+python -m my_scraper.cli.main --urls https://news.ycombinator.com/ --open-web --max-pages 500 --max-depth 2
+
 # Continue after pressing Ctrl+C or a crash
 python -m my_scraper.cli.main --urls https://books.toscrape.com/ --resume
 
@@ -56,6 +59,40 @@ python my_scraper/benchmark/run.py --sites my_scraper/benchmark/sites_holdout.js
 
 Results go to `./output`, logs to `./logs`, and crawl state to `./data`, all relative to the folder you run from.
 
+## For AI Assistants and Other Programs
+
+The scraper also runs as a service, so AI assistants and your own code can use it without the command line. Both versions offer the same four requests, with the same robots.txt and compliance rules as a crawl:
+
+| Request | What it returns |
+| --- | --- |
+| `scrape_url` / `POST /v1/scrape` | One page: its main content as clean Markdown (no menus, ads or cookie banners), title, author, date, and the items on it |
+| `crawl_site` / `POST /v1/crawl` | Several pages of one site, each as Markdown, plus the items found. For documentation, blogs and catalogues |
+| `map_site` / `POST /v1/map` | The pages a site has, from its sitemaps and links, optionally filtered by `search` |
+| `extract` / `POST /v1/extract` | Named fields, such as `["price", "brand", "rating"]`, from structured data and the items on a page. `many` gives one record per item on a listing. Fields it can't find are listed, with the page's Markdown attached |
+
+A page that can't be fetched comes back as an error that says why, such as `robots_disallowed` or `login_required`, never as an empty result.
+
+**MCP server**, for Claude Code, Claude Desktop, Cursor and other assistants:
+
+```bash
+pip install mcp
+python -m my_scraper.service.mcp_server                       # stdio, for a local assistant
+python -m my_scraper.service.mcp_server --transport streamable-http --port 8788
+```
+
+`.mcp.json` in the repository root registers it for Claude Code, which asks once before starting it. The path in it is absolute, so change it if the repository moves. For Claude Desktop, add the same entry to its `claude_desktop_config.json`.
+
+**HTTP API:**
+
+```bash
+python -m my_scraper.service.http_api --port 8787
+curl -X POST http://127.0.0.1:8787/v1/scrape -H "Content-Type: application/json" -d "{\"url\": \"https://example.com/\"}"
+```
+
+`GET /v1` lists each request's fields. The API listens on this computer only. To open it to others, pass `--host 0.0.0.0` with `--api-key` (or set `SCRAPER_API_KEY`), and send `Authorization: Bearer <key>`.
+
+Both keep their logs and audit trail in `~/.web-data-extraction` (set `SCRAPER_HOME` to move it), and identify with `SCRAPER_USER_AGENT` when it is set. Requests share pacing, so two requests to one site are still paced as one visitor. A crawl reads at most 200 pages and stops after `timeout` seconds (default 120), returning what it has.
+
 ## Command Line Options
 
 | Option | Meaning |
@@ -70,6 +107,8 @@ Results go to `./output`, logs to `./logs`, and crawl state to `./data`, all rel
 | `--discover` | Also use sitemaps, RSS and Atom feeds, and public WordPress, WooCommerce and Shopify APIs. |
 | `--include`, `--exclude` | Regular expressions choosing which links to follow. Repeatable. |
 | `--max-pages`, `--max-depth` | Crawl limits. Every page attempted counts towards `--max-pages`. Next-page links don't use up depth, so `--max-depth 0` walks a whole listing. |
+| `--open-web` | Follow links to any site, not only the start URLs' sites. See "Crawling the Open Web". |
+| `--max-pages-per-site` | Most pages taken from one site. Defaults to 50 with `--open-web`, no limit otherwise. |
 | `--no-pagination` | Treat next-page links like any other link. |
 | `--incremental` | Skip pages that have not changed since the last run. |
 | `--track` | Compare with the last run of the same crawl and report new, changed and removed items. See "Tracking changes" under What the Crawler Does. |
@@ -171,6 +210,22 @@ Automatic extraction goes by page structure, so it can pick the wrong block on u
 - Crawler traps are avoided: repeating paths, absurdly long URLs, and endless filter combinations
 - `<base href>`, frames, image maps and `onclick` links are all understood
 
+## Crawling the Open Web
+
+`--open-web` turns the crawler loose from its start sites. It follows links to any site, with the same robots.txt rules, pacing and compliance checks as a single-site crawl. The start URLs are only seeds.
+
+- **Depth counts hops between sites.** A link within a site keeps its depth, a link to another site adds one. `--max-depth 0` crawls only the seed sites, `--max-depth 2` reaches sites two links away
+- **Every site gets a turn.** Waiting pages are kept per site and taken from each in turn, so one large site can't fill the crawl, and newly found sites are reached soon after they turn up
+- **Budgets keep it finite.** `--max-pages-per-site` (default 50) caps each site, which also bounds crawler traps. Each site keeps at most four times its budget waiting, and the whole frontier at most `max_frontier` pages (200,000). Links beyond that are dropped
+- **Slow sites don't stall it.** A page is only started once its site is ready for another request, so a site asking for `Crawl-delay: 600` never ties up a worker. When only such sites are left, the crawl stops and keeps their pages for `--resume`
+- **Dead sites are dropped quickly.** A site whose robots.txt can't be reached counts as a refusal, and after 5 refusals its remaining pages are set aside
+- **The browser is used sparingly.** One attempt per site, and no check for infinite scrolling
+- "Share this" links to social networks are not followed
+
+The summary shows how many sites were visited and how many pages are still queued. `--resume` continues from there, so a long crawl can run in sessions.
+
+Before a large open-web crawl, set `robots.user_agent` to a name and contact address of your own, so site owners can reach you. Each page is extracted automatically as usual, so results mix lists, tables, embedded data and one `document` item per article, and the `source` field tells them apart. All visited URLs are held in memory, which is fine for hundreds of thousands of pages but not for millions.
+
 ## Standalone Modules
 
 The crawler does not use these yet. Import them directly if you need them. They have unit tests, but the Redis queue and browser sessions have not been run against a live Redis server or a real site.
@@ -188,6 +243,7 @@ The crawler does not use these yet. Import them directly if you need them. They 
 ```
 my_scraper/
 ├── cli/            # Command-line interface
+├── service/        # MCP server and HTTP API
 ├── config/         # Configuration
 ├── core/           # Crawler, link discovery, page checks
 ├── fetcher/        # HTTP, browser, sitemaps, feeds and platform APIs

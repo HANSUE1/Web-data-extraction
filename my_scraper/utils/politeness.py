@@ -129,6 +129,10 @@ class RateLimiter:
     def interval_for(self, domain: str) -> float:
         return max(self._intervals.get(domain, self.base_interval), self._floors.get(domain, 0.0))
 
+    def ready_in(self, domain: str) -> float:
+        """Seconds until domain's next free slot, 0 if a request could go now."""
+        return max(0.0, self._next_slot.get(domain, 0.0) - time.monotonic())
+
     def set_floor(self, domain: str, seconds: float):
         """Never go faster than this for domain, as with a robots.txt Crawl-delay."""
         self._floors[domain] = seconds

@@ -13,6 +13,7 @@ from my_scraper.parser.auto_extractor import extract_items
 from my_scraper.parser.embedded_state import find_record_lists, records_to_items
 
 MULTI_VALUE_SUFFIX = "[]"  # a selector named tags[] collects every match, not just the first
+ALL_TEXT = " ::text"  # with the space: all text inside the element, including its children
 
 BINARY_TYPES = ("image/", "video/", "audio/", "font/", "application/octet-stream", "application/zip")
 XML_OPENINGS = ("<?xml", "<rss", "<feed", "<rdf:rdf", "<urlset", "<sitemapindex")
@@ -114,6 +115,22 @@ class HTMLParser:
         """Support CSS and XPath. Use .// for an XPath relative to the current item."""
         return sel.xpath(selector) if selector.startswith(("/", "./", "(")) else sel.css(selector)
 
+    @classmethod
+    def first_value(cls, sel: Selector, selector: str) -> Optional[str]:
+        """The value of a single-value field.
+
+        For 'h4 ::text' this is the whole text of the first h4 with any, so
+        '<b>Title:</b> Paper 1' gives 'Title: Paper 1', not just 'Title:'.
+        Otherwise it is the first non-blank match: an icon before the text leaves a blank first.
+        """
+        if selector.endswith(ALL_TEXT):
+            for element in cls._query(sel, selector[:-len(ALL_TEXT)] or "*"):
+                text = " ".join(piece.strip() for piece in element.xpath(".//text()").getall() if piece.strip())
+                if text:
+                    return text
+            return None
+        return next((value.strip() for value in cls._query(sel, selector).getall() if value.strip()), None)
+
     def _extract(self, sel: Selector, selectors: Dict[str, str], errors: List[str]) -> Dict[str, Any]:
         data: Dict[str, Any] = {}
 
@@ -121,9 +138,10 @@ class HTMLParser:
             multiple = name.endswith(MULTI_VALUE_SUFFIX)
             key = name[:-len(MULTI_VALUE_SUFFIX)] if multiple else name
             try:
-                # An icon before the text leaves a blank text node first, so skip the blanks.
-                values = [value.strip() for value in self._query(sel, selector).getall() if value.strip()]
-                data[key] = values if multiple else (values[0] if values else None)
+                if multiple:
+                    data[key] = [value.strip() for value in self._query(sel, selector).getall() if value.strip()]
+                else:
+                    data[key] = self.first_value(sel, selector)
             except Exception as e:  # parsel raises several types for a bad selector
                 errors.append(f"Error parsing field '{key}': {e}")
                 data[key] = None

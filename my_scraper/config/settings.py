@@ -138,6 +138,12 @@ class CrawlConfig:
     include_patterns: List[str] = field(default_factory=list)  # regexes a link must match
     exclude_patterns: List[str] = field(default_factory=list)  # regexes a link must not match
 
+    # Open web: follow links to any site. max_depth then counts hops between sites, and
+    # links within a site are bounded by max_pages_per_site instead.
+    open_web: bool = False
+    max_pages_per_site: Optional[int] = None  # None: no limit per site
+    max_frontier: int = 200_000  # pages waiting to be visited; links found beyond this are dropped
+
     incremental: bool = False  # on repeat runs, skip pages that have not changed
     track_changes: bool = False  # report what is new, changed or gone since the last run
 

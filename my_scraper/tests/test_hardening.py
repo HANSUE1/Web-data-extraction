@@ -344,7 +344,18 @@ def test_learning_a_value_split_by_inline_tags():
 
     item, fields = learn_selectors(html, {"title": "Title: Paper 0"})
 
-    assert len(UniversalParser().parse_page({"url": URL, "content": html}, fields, item).items) == 4
+    items = UniversalParser().parse_page({"url": URL, "content": html}, fields, item).items
+    assert len(items) == 4
+    assert items[3] == {"title": "Title: Paper 3"}
+
+
+def test_a_spaced_text_selector_keeps_the_whole_text_of_the_first_match():
+    html = '<div class="c"><h4 class="p">$1</h4><h4><a href="/x">Laptop <b>Pro</b></a></h4></div>'
+
+    page = UniversalParser().parse_page({"url": URL, "content": html},
+                                        {"first": "h4 ::text", "name": "h4 a ::text", "own": "h4 a::text"}, ".c")
+
+    assert page.items == [{"first": "$1", "name": "Laptop Pro", "own": "Laptop"}]
 
 
 def test_learning_refuses_an_empty_example():
@@ -449,3 +460,21 @@ def test_unwritable_output_folder_is_a_clear_error(tmp_path):
 
 def test_html_page_helper_still_used():
     assert "lorem" in html_page("x")
+
+
+def test_one_long_item_does_not_hide_a_list():
+    # quotes.toscrape.com/page/2/: one quote is a third of the page, and the list vanished.
+    from my_scraper.parser.auto_extractor import extract_items
+
+    lengths = [40, 45, 50, 55, 60, 70, 90, 200, 450, 1300]
+    quotes = "".join(
+        f'<div class="quote"><span class="text">{"word " * (n // 5)}</span>'
+        f'<small class="author">Author {i}</small> <a href="/author/{i}">(about)</a>'
+        f'<div class="tags"><a class="tag" href="/tag/t{i}/">t{i}</a></div></div>'
+        for i, n in enumerate(lengths))
+    html = f"<html><body><h1>Quotes</h1>{quotes}</body></html>"
+
+    items = extract_items(html, "https://quotes.example/page/2/")
+
+    assert len(items) == 10
+    assert {item["source"] for item in items} == {"list"}

@@ -20,6 +20,9 @@ from my_scraper.core.crawler import ProductionCrawler  # noqa: E402
 from my_scraper.storage.changes import describe  # noqa: E402
 
 
+OPEN_WEB_PAGES_PER_SITE = 50
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Production-grade Web Scraper")
     parser.add_argument("--config", type=str, help="Path to config JSON file")
@@ -50,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sitemap", action="store_true", help="Also find pages from the site's sitemaps")
     parser.add_argument("--discover", action="store_true",
                         help="Also use the site's sitemaps, feeds and public APIs (RSS, WordPress, Shopify)")
+    parser.add_argument("--open-web", action="store_true",
+                        help="Follow links to any site, not only the start URLs' sites. --max-depth then "
+                             "counts hops between sites")
+    parser.add_argument("--max-pages-per-site", type=int, metavar="N",
+                        help=f"Most pages from one site (default with --open-web: {OPEN_WEB_PAGES_PER_SITE})")
     parser.add_argument("--no-pagination", action="store_true",
                         help="Count next-page links against --max-depth like any other link")
     parser.add_argument("--include", action="append", metavar="REGEX",
@@ -91,8 +99,15 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
         except (OSError, ValueError, TypeError) as e:
             parser.error(f"could not load config {args.config}: {e}")
 
+    if args.open_web:
+        config.open_web = True
     if args.urls:
         config.start_urls = args.urls
+    if config.open_web:
+        config.allowed_domains = []
+        if config.max_pages_per_site is None:
+            config.max_pages_per_site = OPEN_WEB_PAGES_PER_SITE
+    elif args.urls:
         config.allowed_domains = domains_of(args.urls)
     elif not config.allowed_domains:
         config.allowed_domains = domains_of(config.start_urls)
@@ -107,6 +122,10 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
         config.max_pages = args.max_pages
     if args.max_depth is not None:
         config.max_depth = args.max_depth
+    if args.max_pages_per_site is not None:
+        if args.max_pages_per_site < 1:
+            parser.error("--max-pages-per-site must be at least 1")
+        config.max_pages_per_site = args.max_pages_per_site
     if args.rate_limit is not None:
         config.rate_limit.requests_per_second = args.rate_limit
     if args.output_dir is not None:
@@ -159,7 +178,12 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
 
 
 def print_summary(crawler: ProductionCrawler, heading: str):
-    print(f"\n{heading} Extracted {len(crawler.results)} items from {len(crawler.state.visited)} pages.")
+    visited = crawler.state.visited
+    where = f" on {len({urlparse(url).netloc for url in visited})} sites" if crawler.config.open_web else ""
+    print(f"\n{heading} Extracted {len(crawler.results)} items from {len(visited)} pages{where}.")
+    if crawler.config.open_web and crawler.state.frontier:
+        print(f"  {len(crawler.state.frontier)} pages on {crawler.state.frontier.site_count} sites "
+              "still queued: --resume continues")
     compliance = crawler.compliance
     for status, count in compliance.status_counts.most_common():
         reason = compliance.first_errors.get(status)

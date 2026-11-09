@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "web-data-extraction": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["C:/Users/Hans/Documents/PROGRAMS/Webscraper/Web-data-extraction/my_scraper/service/mcp_server.py"],
+      "env": {}
+    }
+  }
+}

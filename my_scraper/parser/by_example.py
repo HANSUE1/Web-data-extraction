@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from parsel import Selector
 
 from my_scraper.parser.auto_extractor import _candidate_groups, _clean
+from my_scraper.parser.universal_parser import HTMLParser
 
 MIN_ROWS = 2
 MIN_FILLED_SHARE = 0.6
@@ -29,9 +30,14 @@ def _own_text(element) -> str:
 
 
 def _find_all_values(root, examples: Dict[str, str]) -> Dict[str, List[Found]]:
-    """Where each example appears on the page, exact matches first. One pass over the page."""
+    """Where each example appears on the page, best matches first. One pass over the page.
+
+    An element whose own text is the value beats a wrapper that only holds it in a child,
+    so <h4><a class="title">X</a></h4> learns 'h4 a.title', not 'h4', which may match a sibling h4.
+    """
     wanted = {name: _clean(value) for name, value in examples.items()}
     exact: Dict[str, List[Found]] = {name: [] for name in examples}
+    wrapped: Dict[str, List[Found]] = {name: [] for name in examples}
     partial: Dict[str, List[Found]] = {name: [] for name in examples}
 
     for element in root.iter():
@@ -41,15 +47,17 @@ def _find_all_values(root, examples: Dict[str, str]) -> Dict[str, List[Found]]:
         full_text = _clean(element.text_content()) if len(element) <= MAX_CHILDREN_FOR_FULL_TEXT else text
         attributes = {name: _clean(element.get(name)) for name in VALUE_ATTRIBUTES if element.get(name)}
         for name, value in wanted.items():
-            if text == value or full_text == value:
+            if text == value:
                 exact[name].append((element, None))
+            elif full_text == value:
+                wrapped[name].append((element, None))
             elif value in text:
                 partial[name].append((element, None))
             for attribute, attribute_value in attributes.items():
                 if attribute_value == value:
                     exact[name].append((element, attribute))
 
-    return {name: exact[name] + partial[name] for name in examples}
+    return {name: exact[name] + wrapped[name] + partial[name] for name in examples}
 
 
 def _usable_classes(element) -> List[str]:
@@ -95,7 +103,8 @@ def _with_target(path: str, attribute: Optional[str]) -> str:
 
 
 def _value_matches(row, selector: str) -> str:
-    return " ".join(_clean(value) for value in row.css(selector).getall()).strip()
+    """What the parser will extract for this field, so a selector is judged by its real output."""
+    return _clean(HTMLParser.first_value(row, selector) or "")
 
 
 def _best_field(rows, block, found: Found, example: str) -> Optional[Tuple[str, int]]:

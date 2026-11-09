@@ -18,6 +18,7 @@ brotli>=1.1.0
 # Optional: only needed by the feature named
 playwright>=1.40.0          # JavaScript sites (also run: playwright install chromium)
 redis>=5.0.0                # queueing.persistent_queue.RedisQueue
+mcp>=2.3.0                  # service.mcp_server, for AI assistants
 prometheus-client>=0.19.0   # monitoring.metrics
 
 # Development
