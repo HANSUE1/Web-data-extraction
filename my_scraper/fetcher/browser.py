@@ -111,9 +111,15 @@ class BrowserUnavailable(Exception):
     """The browser could not start, which trying again will not change."""
 
 
+# Second-level labels under which countries register domains, as in bbc.co.uk or abc.net.au.
+SECOND_LEVEL = {"co", "com", "net", "org", "gov", "ac", "edu", "or", "ne", "go"}
+
+
 def _registered_domain(url: str) -> str:
-    """The last two labels of a host, enough to tell a site's own API from a third party's."""
-    return ".".join(site_key(urlsplit(url).hostname or "").split(".")[-2:])
+    """The domain a site registered, enough to tell its own API from a third party's."""
+    labels = site_key(urlsplit(url).hostname or "").split(".")
+    keep = 3 if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in SECOND_LEVEL else 2
+    return ".".join(labels[-keep:])
 
 
 class NetworkWatch:

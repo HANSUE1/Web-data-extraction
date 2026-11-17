@@ -196,7 +196,7 @@ def test_json_response_does_not_break_the_crawl(site, make_config):
 
     run(config)
 
-    statuses = [json.loads(line)["status"] for line in Path("logs/audit.log").read_text(encoding="utf-8").splitlines()]
+    statuses = [json.loads(line)["status"] for line in Path("outputs/logs/audit.log").read_text(encoding="utf-8").splitlines()]
     assert statuses == ["success"]
 
 

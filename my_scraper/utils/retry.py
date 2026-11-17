@@ -45,7 +45,7 @@ class RetryContext:
 class DeadLetterQueue:
     """Dead-letter queue for failed URLs."""
 
-    def __init__(self, dlq_file: str = "./data/dead_letter_queue.jsonl"):
+    def __init__(self, dlq_file: str):
         self.dlq_file = dlq_file
         Path(dlq_file).parent.mkdir(parents=True, exist_ok=True)
 
@@ -96,7 +96,7 @@ class RetryManager:
         self.jitter = config.retry.jitter
         self.retry_on_status = config.retry.retry_on_status
         self.retry_on_exceptions = config.retry.retry_on_exceptions
-        self.dlq = DeadLetterQueue()
+        self.dlq = DeadLetterQueue(str(Path(config.storage.state_dir) / "dead_letter_queue.jsonl"))
 
     def should_retry(self, context: RetryContext, exception: Exception = None, status: int = None) -> bool:
         """Determine if a failed attempt should be retried."""

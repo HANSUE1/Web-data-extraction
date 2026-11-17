@@ -9,7 +9,7 @@ No scraper reads every website. Some sites refuse automated access, some data is
 Run these from the repository root.
 
 ```bash
-pip install -r my_scraper/requirements_production.txt
+pip install -r requirements.txt
 
 # Point it at any site: items are found automatically, no selectors needed
 python -m my_scraper.cli.main --urls https://books.toscrape.com/ --max-pages 20 --export jsonl csv
@@ -47,7 +47,7 @@ python -m my_scraper.cli.main --urls https://news.ycombinator.com/ --open-web --
 python -m my_scraper.cli.main --urls https://books.toscrape.com/ --resume
 
 # Worked example: 50 products from books.toscrape.com
-python my_scraper/example_usage.py
+python examples/books_toscrape.py
 
 # Run the tests (no network needed)
 python -m pytest my_scraper/tests
@@ -57,7 +57,18 @@ python my_scraper/benchmark/run.py --out results.json
 python my_scraper/benchmark/run.py --sites my_scraper/benchmark/sites_holdout.json
 ```
 
-Results go to `./output`, logs to `./logs`, and crawl state to `./data`, all relative to the folder you run from.
+Everything the scraper writes goes into one folder, `./outputs`, relative to where you run it:
+
+```
+outputs/
+├── results/   exports, named after the site and time: books.toscrape.com_20261118_014402.csv
+│              (all formats of one run share the name), plus --track change reports
+├── logs/      scraper.log and audit.log
+└── state/     crawl checkpoints (one per set of start URLs, for --resume), raw HTML,
+               the --incremental cache, --track snapshots, failed URLs and the takedown blocklist
+```
+
+Delete `outputs/results` or `outputs/logs` whenever you like. Deleting `outputs/state` forgets checkpoints, the incremental cache, change-tracking baselines and the takedown blocklist.
 
 ## For AI Assistants and Other Programs
 
@@ -114,10 +125,10 @@ Both keep their logs and audit trail in `~/.web-data-extraction` (set `SCRAPER_H
 | `--track` | Compare with the last run of the same crawl and report new, changed and removed items. See "Tracking changes" under What the Crawler Does. |
 | `--rate-limit` | Requests per second, per domain. Fractions such as `0.5` work. |
 | `--export` | Any of `json`, `jsonl`, `csv`, `sqlite`. |
-| `--output-dir` | Where exports are written. |
+| `--output-dir` | Where exports are written (default `outputs/results`). |
 | `--use-browser`, `--no-browser` | Force the browser for every page, or never use it. By default it is used when a page needs it. |
 | `--quiet` | Keep logs to the log file and print only the summary. |
-| `--resume` | Continue from the last saved crawl state. |
+| `--resume` | Continue the last interrupted crawl of the same `--urls`. Each set of start URLs has its own checkpoint. |
 | `--config` | JSON file with any `CrawlConfig` setting. Command line options override it. |
 
 Example config file:
@@ -162,12 +173,12 @@ Automatic extraction goes by page structure, so it can pick the wrong block on u
 **Fetching**
 - Static HTTP first, with headless Chromium when the result shows a page needs it (mode `auto`)
 - Character encodings are read from the BOM, HTTP header or page, detected when undeclared, and corrected when declared wrongly
-- Meta refresh redirects are followed, and responses are capped at 30 MB
-- Exponential backoff with jitter; URLs that still fail go to `data/dead_letter_queue.jsonl`
+- Meta refresh redirects within a site are followed, and responses are capped at 30 MB. A refresh to another site is not followed, as that site's robots.txt has not been checked
+- Exponential backoff with jitter; URLs that still fail go to `outputs/state/dead_letter_queue.jsonl`
 - Concurrent workers, capped overall and per domain
 
 **Politeness**
-- robots.txt rules are applied in full, including wildcards and rule priority. They are cached per site. If the file can't be reached the site is skipped, per RFC 9309, and checked again after a minute. That shows up as `robots_unreachable` with the reason, so it can't be confused with a real `robots_disallowed`
+- robots.txt rules are applied in full, including wildcards and rule priority. They are cached per site. If the file can't be reached, or answers 429 Too Many Requests, the site is skipped, per RFC 9309, and checked again after a minute. That shows up as `robots_unreachable` with the reason, so it can't be confused with a real `robots_disallowed`
 - Each domain is paced separately, slowed down automatically on 429 and 503 responses, and never faster than its `Crawl-delay`
 - `Retry-After` is obeyed once. A server that keeps rate limiting, or asks for a very long wait, ends that URL with a clear message
 - After 5 refusals in a row a site is left alone, and its remaining pages are kept for `--resume`
@@ -176,15 +187,15 @@ Automatic extraction goes by page structure, so it can pick the wrong block on u
 **Parsing and export**
 - Automatic extraction, CSS or XPath selectors, and files of many kinds, recognised by their content as well as their label
 - Prices in many currencies and formats, lazy-loaded images, dates, authors and ratings
-- Export to JSON, JSONL, CSV and SQLite; raw HTML saved to `data/raw_html`
+- Export to JSON, JSONL, CSV and SQLite; raw HTML saved to `outputs/state/raw_html`
 - A format that fails to export doesn't affect the others, and CSV cells that would run as spreadsheet formulas are neutralised
 
 **Compliance**
 - Blocks login and paywall URLs by whole path segment (`/login`, `/auth/x`, but not `/author/x`). This is a heuristic based on the URL only
 - Recognises pages that look successful but aren't, and never stores them as data: `blocked_by_site`, `login_required`, `soft_404`, `consent_wall` and `off_site_redirect`
-- Takedowns: `ComplianceManager.handle_takedown_request` adds a domain to `logs/takedown_blocklist.txt`, which is enforced on all future crawls
+- Takedowns: `ComplianceManager.handle_takedown_request` adds a domain to `outputs/state/takedown_blocklist.txt` (or `compliance.blocklist_file`), which is enforced on all future crawls
 - Flags personal data by field name and by value pattern (emails, phone numbers, SSNs)
-- Writes every request outcome to `logs/audit.log`
+- Writes every request outcome to `outputs/logs/audit.log`
 - `required_fields` limits saved data to those fields
 
 **Resuming**
@@ -193,11 +204,11 @@ Automatic extraction goes by page structure, so it can pick the wrong block on u
 
 **Repeat runs**
 - `--incremental` asks the server whether each page changed (ETag, Last-Modified), and compares content when the server can't say
-- Unchanged pages produce no items, so the export holds only what is new or changed. Their links are still followed, using the saved copy in `data/raw_html`, so `save_raw_html` should stay on
+- Unchanged pages produce no items, so the export holds only what is new or changed. Their links are still followed, using the saved copy in `outputs/state/raw_html`, so `save_raw_html` should stay on
 
 **Tracking changes**
-- `--track` keeps a snapshot of each crawl's items in `data/snapshots`, one per set of start URLs and selectors
-- The next run writes `output/changes_<time>.json` listing new items, removed items, and changed items with each field's `before` and `after`, and the summary shows the first few, such as `price £51.77 -> £45.00`
+- `--track` keeps a snapshot of each crawl's items in `outputs/state/snapshots`, one per set of start URLs and selectors
+- The next run writes `outputs/results/changes_<time>.json` listing new items, removed items, and changed items with each field's `before` and `after`, and the summary shows the first few, such as `price £51.77 -> £45.00`
 - Items are matched by their link plus their title, or the first column for table rows. Which method found an item is not counted as a change
 - An item is only reported removed when its page was read again and no longer has it. Items on pages that failed, were unchanged under `--incremental`, or fell outside `--max-pages` are kept in the snapshot, so a partial run never reports half the site as deleted
 - The first run only saves the baseline. Delete the snapshot file to start over
@@ -226,41 +237,30 @@ The summary shows how many sites were visited and how many pages are still queue
 
 Before a large open-web crawl, set `robots.user_agent` to a name and contact address of your own, so site owners can reach you. Each page is extracted automatically as usual, so results mix lists, tables, embedded data and one `document` item per article, and the `source` field tells them apart. All visited URLs are held in memory, which is fine for hundreds of thousands of pages but not for millions.
 
-## Standalone Modules
-
-The crawler does not use these yet. Import them directly if you need them. They have unit tests, but the Redis queue and browser sessions have not been run against a live Redis server or a real site.
-
-| Module | Provides |
-| --- | --- |
-| `queueing/persistent_queue.py` | SQLite and Redis queues, content de-duplication (its ETag cache is used by `--incremental`) |
-| `session/manager.py` | Cookie sessions and persistent browser sessions |
-| `utils/rotation.py` | Proxy pool and header generation |
-| `monitoring/metrics.py` | Prometheus metrics, signed webhooks, tracing |
-| `models/schemas.py` | Pydantic validation for scraped items |
-
 ## Architecture
 
 ```
-my_scraper/
-├── cli/            # Command-line interface
-├── service/        # MCP server and HTTP API
-├── config/         # Configuration
-├── core/           # Crawler, link discovery, page checks
-├── fetcher/        # HTTP, browser, sitemaps, feeds and platform APIs
-├── parser/         # Automatic extraction, app data, selectors by example, file formats
-├── storage/        # Exporters
-├── compliance/     # Audit trail, URL policy, personal data checks
-├── utils/          # Politeness, retry, URLs, HTTP sessions, rotation
-├── logutil/        # Structured logging
-├── queueing/       # Persistent queues (standalone)
-├── session/        # Sessions (standalone)
-├── monitoring/     # Metrics (standalone)
-├── models/         # Item schemas (standalone)
-├── benchmark/      # Measures the scraper against real websites
-└── tests/
+Web-data-extraction/
+├── README.md
+├── requirements.txt
+├── examples/
+│   └── books_toscrape.py   # worked example: a hand-written scraper built on the crawler
+├── outputs/                # everything the scraper writes (see Quick Start), not in git
+└── my_scraper/
+    ├── cli/                # command line: main.py, and explain.py for --explain
+    ├── service/            # MCP server and HTTP API, sharing one engine
+    ├── config/             # settings and their defaults
+    ├── core/               # crawler, frontier, link finding, page checks
+    ├── fetcher/            # HTTP, browser, sitemaps, feeds and platform APIs
+    ├── parser/             # automatic extraction, app data, selectors by example, file formats
+    ├── storage/            # exporters, change tracking, the --incremental cache
+    ├── compliance/         # audit trail, URL policy, takedowns, personal data checks
+    ├── utils/              # politeness, retry, URLs, HTTP sessions, logging
+    ├── benchmark/          # measures the scraper against real websites
+    └── tests/
 ```
 
-`scrape_simple.py` in the repository root is a separate quick tool for one-page extraction. It also obeys robots.txt.
+For a quick one-page job, the CLI does what a separate script would: `--max-depth 0 --item ".row" --selector "name=a::text"`.
 
 ## What It Cannot Do
 

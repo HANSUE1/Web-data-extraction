@@ -167,7 +167,8 @@ class UniversalParser:
         HTML uses the given selectors, or works items out automatically when there are none.
         """
         content = fetch_result["content"]
-        url = fetch_result["url"]
+        # Links on the page are relative to where it really is, after any redirect.
+        url = fetch_result.get("final_url") or fetch_result["url"]
         body = fetch_result.get("body")
         kind = self.detector.detect(content, fetch_result.get("headers"), url, body)
 
@@ -180,7 +181,7 @@ class UniversalParser:
     def _parse_html(self, fetch_result: Dict[str, Any], selectors: Optional[Dict[str, str]],
                     item_selector: Optional[str], include_markdown: bool) -> ParsedPage:
         content = fetch_result["content"]
-        url = fetch_result["url"]
+        url = fetch_result.get("final_url") or fetch_result["url"]
         snapshots = fetch_result.get("snapshots") or []
 
         if not selectors and not item_selector:

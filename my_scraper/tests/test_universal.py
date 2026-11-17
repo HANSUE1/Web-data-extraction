@@ -508,7 +508,7 @@ def auto_config(make_config, **overrides):
 
 
 def audit_statuses():
-    lines = Path("logs/audit.log").read_text(encoding="utf-8").splitlines()
+    lines = Path("outputs/logs/audit.log").read_text(encoding="utf-8").splitlines()
     return [json.loads(line)["status"] for line in lines]
 
 
@@ -779,7 +779,8 @@ def test_a_fresh_crawl_starts_with_no_old_items(site, make_config):
     _, results = run(make_config())
 
     assert len(results) == 1
-    state = CrawlState()
+    [checkpoint] = Path("outputs/state/crawls").glob("*.json")  # one crawl, one checkpoint
+    state = CrawlState(str(checkpoint))
     state.load()
     assert len(state.load_items()) == 1
 
@@ -799,7 +800,7 @@ def test_state_exists_from_the_start_of_a_crawl(site, make_config):
     states = []
 
     async def check(request):
-        states.append(Path("data/crawl_state.json").exists())
+        states.append(any(Path("outputs/state/crawls").glob("*.json")))
         return web.Response(text=html_page("home"), content_type="text/html")
 
     site.pages["/"] = check

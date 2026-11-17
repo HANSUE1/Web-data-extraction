@@ -44,7 +44,7 @@ def forbids_following(sel: Selector) -> bool:
     """Whether the page's robots meta tag asks crawlers not to follow its links."""
     directives = " ".join(sel.xpath(
         "//meta[translate(@name, 'ROBOTS', 'robots') = 'robots']/@content").getall()).lower()
-    return "nofollow" in directives or "none" in directives.split()
+    return "nofollow" in directives or "none" in re.split(r"[\s,]+", directives)
 
 
 def _in_pager(element) -> bool:

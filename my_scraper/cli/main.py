@@ -22,12 +22,16 @@ from my_scraper.storage.changes import describe  # noqa: E402
 
 OPEN_WEB_PAGES_PER_SITE = 50
 
+# Git Bash on Windows rewrites an argument that starts with / into a Windows path, so
+# --include "/shop/" arrives as "C:/Program Files/Git/shop/" and matches nothing.
+MANGLED_BY_SHELL = re.compile(r"^[A-Za-z]:/.*?/Git/", re.IGNORECASE)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Production-grade Web Scraper")
     parser.add_argument("--config", type=str, help="Path to config JSON file")
     parser.add_argument("--urls", nargs="+", help="Start URLs (with http:// or https://)")
-    parser.add_argument("--output-dir", type=str, help="Output directory (default: ./output)")
+    parser.add_argument("--output-dir", type=str, help="Where exports go (default: ./outputs/results)")
     parser.add_argument("--max-pages", type=int, help="Maximum pages to crawl")
     parser.add_argument("--max-depth", type=int, help="Maximum crawl depth")
     parser.add_argument("--respect-robots", action="store_true", default=None,
@@ -180,6 +184,9 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
             re.compile(pattern)
         except re.error as e:
             parser.error(f"invalid pattern {pattern!r}: {e}")
+        if MANGLED_BY_SHELL.match(pattern):
+            print(f"Warning: pattern {pattern!r} looks rewritten by Git Bash and will match nothing. "
+                  "Run with MSYS_NO_PATHCONV=1, or leave out the leading /.", file=sys.stderr)
 
     return config
 

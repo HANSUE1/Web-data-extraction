@@ -16,6 +16,9 @@ LOGIN_SEGMENTS = {
 }
 PAYWALL_SEGMENTS = {"paywall", "subscribe", "premium"}
 
+# Outcomes where a page really was read. Refusals, errors and robots.txt blocks are not.
+READ_STATUSES = {"success", "no_data_extracted", "unchanged"}
+
 PII_FIELD_KEYWORDS = ("email", "phone", "ssn", "social_security", "address", "zip", "postal", "dob", "birth")
 PII_VALUE_PATTERNS = (
     re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),                        # email
@@ -32,12 +35,15 @@ class ComplianceManager:
         self.config = config
         self.audit_log_file = config.logging.audit_log
         Path(self.audit_log_file).parent.mkdir(parents=True, exist_ok=True)
-        self.blocklist_file = Path(self.audit_log_file).with_name("takedown_blocklist.txt")
+        # Kept with the crawl state, not the logs, so clearing old logs never lifts a takedown.
+        self.blocklist_file = Path(config.compliance.blocklist_file
+                                   or Path(config.storage.state_dir) / "takedown_blocklist.txt")
+        self.blocklist_file.parent.mkdir(parents=True, exist_ok=True)
         self.blocked_domains = self._load_blocklist()
 
-        # Track scraped URLs and data
-        self.scraped_urls = []
-        self.personal_data_found = []
+        # Pages really read, and personal data seen, counted whether or not auditing is on.
+        self.scraped_urls: Set[str] = set()
+        self.personal_data_found: Set[str] = set()
         self.status_counts: Counter = Counter()
         self.first_errors: Dict[str, str] = {}
 
@@ -97,6 +103,10 @@ class ComplianceManager:
         self.status_counts[status] += 1
         if error:
             self.first_errors.setdefault(status, error)
+        if status in READ_STATUSES:
+            self.scraped_urls.add(url)
+        if personal_data:
+            self.personal_data_found.update(personal_data)
 
         if not self.config.compliance.audit_all_requests:
             return
@@ -116,17 +126,13 @@ class ComplianceManager:
             event["error"] = error
         self._append_audit(event)
 
-        self.scraped_urls.append(url)
-        if personal_data:
-            self.personal_data_found.extend(personal_data)
-
     def generate_compliance_report(self) -> Dict[str, Any]:
         """Generate compliance report."""
         return {
             "report_generated": utc_now_iso(),
             "total_urls_scraped": len(self.scraped_urls),
             "unique_domains": len({urlparse(url).netloc for url in self.scraped_urls}),
-            "personal_data_fields_found": sorted(set(self.personal_data_found)),
+            "personal_data_fields_found": sorted(self.personal_data_found),
             "jurisdiction": self.config.compliance.jurisdiction,
             "public_only_enforced": self.config.compliance.public_only,
             "data_minimization_enforced": self.config.compliance.data_minimization,

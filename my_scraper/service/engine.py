@@ -18,7 +18,7 @@ from urllib.parse import urljoin, urlparse
 from parsel import Selector
 
 from my_scraper.config.settings import CrawlConfig, FetcherType
-from my_scraper.core.crawler import CrawlState, ProductionCrawler
+from my_scraper.core.crawler import ProductionCrawler
 from my_scraper.core.links import base_url_of, page_links
 from my_scraper.fetcher.smart_fetcher import SmartFetcher
 from my_scraper.parser.auto_extractor import _describes_page, page_markdown
@@ -98,9 +98,8 @@ class ServiceError(Exception):
 class _ServiceCrawler(ProductionCrawler):
     """A crawler for one request, using the service's shared politeness and fetcher."""
 
-    def __init__(self, config: CrawlConfig, service: "ScrapeService", job_dir: Path):
-        super().__init__(config)
-        self.state = CrawlState(str(job_dir / "state.json"))
+    def __init__(self, config: CrawlConfig, service: "ScrapeService"):
+        super().__init__(config)  # its state goes to the job folder, which config points at
         self.politeness = service.politeness
         self.fetcher = service.fetcher
         self.outcomes: Dict[str, Tuple[str, Optional[str]]] = {}  # url -> (status, reason), in order
@@ -178,6 +177,10 @@ class ScrapeService:
         self.home = Path(home or os.environ.get("SCRAPER_HOME") or Path.home() / ".web-data-extraction")
         (self.home / "logs").mkdir(parents=True, exist_ok=True)
         (self.home / "jobs").mkdir(parents=True, exist_ok=True)
+        self.blocklist = self.home / "takedown_blocklist.txt"
+        old_blocklist = self.home / "logs" / "takedown_blocklist.txt"  # where earlier versions kept it
+        if old_blocklist.exists() and not self.blocklist.exists():
+            old_blocklist.replace(self.blocklist)
         self.user_agent = user_agent or os.environ.get("SCRAPER_USER_AGENT")
         self.rate_limit = rate_limit
         self.use_browser = use_browser
@@ -213,6 +216,7 @@ class ScrapeService:
         config.logging.console = False  # stdout belongs to the MCP connection
         config.logging.log_file = str(self.home / "logs" / "service.log")
         config.logging.audit_log = str(self.home / "logs" / "audit.log")
+        config.compliance.blocklist_file = str(self.blocklist)
         if self.user_agent:
             config.robots.user_agent = self.user_agent
         if self.rate_limit:
@@ -232,9 +236,10 @@ class ScrapeService:
     def _crawler(self, job: Path, start_urls: List[str], render: str, **overrides) -> _ServiceCrawler:
         self._bind_to_loop()
         config = self._config(start_urls, **overrides)
+        config.storage.state_dir = str(job / "state")
         config.storage.blob_storage_path = str(job / "raw_html")
-        config.output_dir = str(job / "output")
-        crawler = _ServiceCrawler(config, self, job)
+        config.output_dir = str(job / "results")
+        crawler = _ServiceCrawler(config, self)
         if render == "never":
             crawler._render_limit = 0
         return crawler

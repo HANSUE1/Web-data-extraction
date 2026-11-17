@@ -397,7 +397,7 @@ def test_audit_events_keep_errors_and_have_unique_ids(compliance):
     compliance.log_scrape_event("http://x/", "failed", error="boom")
     compliance.log_scrape_event("http://x/", "failed", error="boom")
 
-    events = [json.loads(line) for line in Path("logs/audit.log").read_text(encoding="utf-8").splitlines()]
+    events = [json.loads(line) for line in Path("outputs/logs/audit.log").read_text(encoding="utf-8").splitlines()]
     assert events[0]["error"] == "boom"
     assert events[0]["event_id"] != events[1]["event_id"]
 

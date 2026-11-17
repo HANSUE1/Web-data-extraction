@@ -26,12 +26,12 @@ from my_scraper.fetcher.discovery import (
 )
 from my_scraper.fetcher.sitemap import discover_urls
 from my_scraper.fetcher.smart_fetcher import RawHtmlStorage, SmartFetcher
-from my_scraper.logutil import StructuredLogger, log_parsing, log_request
 from my_scraper.parser.by_example import learn_selectors
 from my_scraper.parser.universal_parser import ParsedPage, UniversalParser
-from my_scraper.queueing.persistent_queue import ETagCache
-from my_scraper.storage.changes import ChangeReport, snapshot_path, track
+from my_scraper.storage.changes import ChangeReport, crawl_file, track
+from my_scraper.storage.etag_cache import ETagCache
 from my_scraper.storage.multi_format import StorageManager
+from my_scraper.utils.logs import StructuredLogger, log_parsing, log_request
 from my_scraper.utils.politeness import PolitenessManager
 from my_scraper.utils.retry import HttpStatusError, RetryManager
 from my_scraper.utils.urls import domain_key, facet_key, is_action, is_asset, is_trap, normalize_url, site_key
@@ -63,7 +63,7 @@ def site_of(url: str) -> str:
 class CrawlState:
     """Persist crawl state for checkpointing."""
 
-    def __init__(self, state_file: str = "./data/crawl_state.json"):
+    def __init__(self, state_file: str):
         self.state_file = Path(state_file)
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.items_file = self.state_file.with_name(f"{self.state_file.stem}_items.jsonl")
@@ -139,7 +139,9 @@ class ProductionCrawler:
 
     def __init__(self, config):
         self.config = config
-        self.state = CrawlState()
+        self.state_dir = Path(config.storage.state_dir)
+        # One checkpoint per set of start URLs, so --resume never continues a different crawl.
+        self.state = CrawlState(str(crawl_file(config.start_urls, self.state_dir / "crawls")))
         self.results: List[Dict[str, Any]] = []
         self.exports: Dict[str, Optional[str]] = {}
         self.changes: Optional[ChangeReport] = None
@@ -173,7 +175,7 @@ class ProductionCrawler:
         self.storage = StorageManager(config)
         self.compliance = ComplianceManager(config)
         self.raw_storage = RawHtmlStorage(config.storage.blob_storage_path)
-        self.etag_cache = ETagCache() if config.incremental else None
+        self.etag_cache = ETagCache(str(self.state_dir / "etag_cache.db")) if config.incremental else None
         self.logger = StructuredLogger(
             config.name,
             log_file=config.logging.log_file,
@@ -194,6 +196,8 @@ class ProductionCrawler:
         """
         if start_urls is None:
             start_urls = self.config.start_urls
+        elif sorted(start_urls) != sorted(self.config.start_urls):
+            self.state = CrawlState(str(crawl_file(start_urls, self.state_dir / "crawls")))
         if selectors is not None:
             self._selectors = dict(selectors)
 
@@ -243,7 +247,7 @@ class ProductionCrawler:
     def _track_changes(self, start_urls: List[str]):
         # Examples teach different selectors, so a crawl taught other values is a different crawl.
         identity = {**self.config.selectors, **{f"example:{k}": v for k, v in self.config.examples.items()}}
-        path = snapshot_path(start_urls, identity, self.config.item_selector)
+        path = crawl_file(start_urls, self.state_dir / "snapshots", identity, self.config.item_selector)
         try:
             self.changes = track(self.results, path, self.config.output_dir)
         except OSError as e:
@@ -536,7 +540,7 @@ class ProductionCrawler:
             self._slow_sites.add(domain)
             self.logger.warning("slow_pacing", site=domain, seconds_between_requests=interval)
 
-    async def process_url(self, url: str, depth: int, selectors: Dict[str, str] = None):
+    async def process_url(self, url: str, depth: int):
         """Fetch a page, store what it yields and queue its links."""
         domain = urlparse(url).netloc
         limit = self._domain_limits.setdefault(

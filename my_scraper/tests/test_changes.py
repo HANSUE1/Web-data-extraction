@@ -5,7 +5,7 @@ from pathlib import Path
 
 from my_scraper.cli.main import main
 from my_scraper.core.crawler import ProductionCrawler
-from my_scraper.storage.changes import compare, describe, snapshot_path, track
+from my_scraper.storage.changes import compare, crawl_file, describe, track
 
 
 def product_list(*products):
@@ -36,7 +36,7 @@ def test_first_run_saves_a_baseline_and_writes_no_report(site, make_config):
     assert crawler.changes.baseline
     assert crawler.changes.report_path is None
     assert Path(crawler.changes.snapshot_path).exists()
-    assert not list(Path("output").glob("changes_*.json"))
+    assert not list(Path("outputs/results").glob("changes_*.json"))
 
 
 def test_second_run_reports_new_changed_and_removed_items(site, make_config):
@@ -86,10 +86,10 @@ def _with_depth(make_config, depth):
 
 
 def test_different_crawls_keep_separate_snapshots():
-    one = snapshot_path(["https://a.example/"], {"title": "h1"}, None)
-    other = snapshot_path(["https://a.example/"], {"title": "h2"}, None)
+    one = crawl_file(["https://a.example/"], "snapshots", {"title": "h1"})
+    other = crawl_file(["https://a.example/"], "snapshots", {"title": "h2"})
     assert one != other
-    assert one == snapshot_path(["https://a.example/"], {"title": "h1"}, None)
+    assert one == crawl_file(["https://a.example/"], "snapshots", {"title": "h1"})
     assert one.name.startswith("a.example_")
 
 

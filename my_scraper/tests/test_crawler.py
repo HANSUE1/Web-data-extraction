@@ -21,7 +21,7 @@ def titles(results):
 
 
 def audit_statuses():
-    lines = Path("logs/audit.log").read_text(encoding="utf-8").splitlines()
+    lines = Path("outputs/logs/audit.log").read_text(encoding="utf-8").splitlines()
     return [json.loads(line)["status"] for line in lines]
 
 
@@ -267,7 +267,7 @@ def test_interrupted_crawl_saves_results_and_resumes(site, make_config):
 
     assert titles(results) == ["home", "later", "slow"]  # one complete result set
     assert site.hits["/"] == 1  # finished pages are not fetched again
-    assert len(list(Path("output").glob("*.jsonl"))) == 2  # the resume keeps the first export
+    assert len(list(Path("outputs/results").glob("*.jsonl"))) == 2  # the resume keeps the first export
 
 
 def test_corrupt_checkpoint_is_ignored(tmp_path):

@@ -37,7 +37,7 @@ def run(config, **kwargs):
 
 
 def audit_statuses():
-    lines = Path("logs/audit.log").read_text(encoding="utf-8").splitlines()
+    lines = Path("outputs/logs/audit.log").read_text(encoding="utf-8").splitlines()
     return [json.loads(line).get("status") for line in lines]
 
 

@@ -94,7 +94,13 @@ def _entry_link(entry) -> Optional[str]:
                 return href
             if not href and child.text and child.text.strip():
                 return child.text.strip()
-    return _text_of(_child(entry, "guid", "id")) if _child(entry, "guid") is not None else None
+    guid = _child(entry, "guid")
+    if guid is not None and guid.get("isPermaLink", "true").lower() != "false":
+        value = _text_of(guid)
+        if value and value.startswith(("http://", "https://")):
+            return value
+    atom_id = _text_of(_child(entry, "id"))  # Atom ids are often the entry's address too
+    return atom_id if atom_id and atom_id.startswith(("http://", "https://")) else None
 
 
 def _entry_image(entry) -> Optional[str]:

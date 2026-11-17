@@ -94,7 +94,8 @@ def next_api_page(url: str, item_count: int) -> Optional[str]:
     parts = urlsplit(url)
     query = dict(parse_qsl(parts.query))
     page_size = next((int(query[name]) for name in PAGE_SIZE_PARAMS if query.get(name, "").isdigit()), None)
-    if page_size is None or item_count < page_size:
+    page = query.get("page", "1")
+    if page_size is None or item_count < page_size or not page.isdigit():
         return None
-    query["page"] = str(int(query.get("page", "1")) + 1)
+    query["page"] = str(int(page) + 1)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))

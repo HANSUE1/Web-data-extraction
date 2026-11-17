@@ -6,10 +6,6 @@ __pycache__/
 .venv/
 venv/
 
-# Generated at runtime
-logs/
-data/
-output/
+# Everything the scraper writes: results, logs and crawl state
 outputs/
-extracted_all/
 *.db

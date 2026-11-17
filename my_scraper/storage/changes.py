@@ -1,6 +1,6 @@
 """Change tracking: what is new, what changed and what is gone since the last run of a crawl.
 
-Each crawl keeps a snapshot of its items in data/snapshots, keyed by its start URLs and
+Each crawl keeps a snapshot of its items in outputs/state/snapshots, keyed by its start URLs and
 selectors, so different crawls never compare against each other. An item only counts as
 removed when the page it came from was read again this run and no longer has it. Pages
 that were skipped, failed, unchanged (with --incremental) or beyond --max-pages keep
@@ -15,8 +15,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 from urllib.parse import urlparse
-
-SNAPSHOT_DIR = "./data/snapshots"
 
 # Which method found an item is not a change in the item itself.
 IGNORED_FIELDS = {"source"}
@@ -51,9 +49,11 @@ class ChangeReport:
         }
 
 
-def snapshot_path(start_urls: Iterable[str], selectors: Dict[str, str], item_selector: Optional[str],
-                  directory: str = SNAPSHOT_DIR) -> Path:
+def crawl_file(start_urls: Iterable[str], directory, selectors: Optional[Dict[str, str]] = None,
+               item_selector: Optional[str] = None) -> Path:
+    """A file that belongs to one crawl: the same start URLs and selectors give the same file."""
     urls = sorted(start_urls)
+    selectors = selectors or {}
     key = json.dumps([urls, sorted(selectors.items()), item_selector or ""], ensure_ascii=False)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
     host = re.sub(r"[^A-Za-z0-9.-]+", "_", urlparse(urls[0]).netloc if urls else "") or "crawl"

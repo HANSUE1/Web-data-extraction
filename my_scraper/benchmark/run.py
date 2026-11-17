@@ -121,7 +121,8 @@ async def run_site(site: dict, limit: asyncio.Semaphore) -> dict:
             output, _ = await process.communicate()
             timed_out = True
 
-        exports = list((workdir / "output").glob("*.jsonl")) if (workdir / "output").exists() else []
+        results = workdir / "outputs" / "results"
+        exports = list(results.glob("*.jsonl")) if results.exists() else []
         items = read_jsonl(exports[0]) if exports else []
 
         statuses: dict = collections.Counter()

@@ -1,11 +1,15 @@
 """Multi-format storage: JSON, JSONL, CSV and SQLite."""
 import csv
 import json
+import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
+
+from my_scraper.config.settings import RESULTS_DIR
 
 Item = Dict[str, Any]
 
@@ -42,6 +46,21 @@ def _text_safe(value: Any) -> Any:
     return value.encode("utf-8", "replace").decode("utf-8") if isinstance(value, str) else value
 
 
+def free_stem(directory: Path, extensions: List[str], label: str = "output") -> str:
+    """label_<date>_<time>, numbered if needed so no file of any of the extensions is overwritten."""
+    base = f"{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    stem, counter = base, 1
+    while any((directory / f"{stem}.{extension}").exists() for extension in extensions):
+        stem, counter = f"{base}_{counter}", counter + 1
+    return stem
+
+
+def run_label(start_urls: List[str]) -> str:
+    """The site a crawl started on, as a file name: "books.toscrape.com"."""
+    host = urlsplit(start_urls[0]).netloc if start_urls else ""
+    return re.sub(r"[^A-Za-z0-9.-]+", "_", host).strip("._") or "output"
+
+
 def _all_keys(items: List[Item]) -> List[str]:
     return sorted({key for item in items for key in item})
 
@@ -76,26 +95,20 @@ class FileExporter:
     extension = ""
     skip_when_empty = False
 
-    def __init__(self, output_dir: str = "./output"):
+    def __init__(self, output_dir: str = RESULTS_DIR):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def export(self, items: List[Item], filename: str = None) -> Optional[str]:
+    def export(self, items: List[Item], filename: str = None, stem: str = None) -> Optional[str]:
+        """Write items to filename, or to stem plus this format's extension, or to a new name."""
         if self.skip_when_empty and not items:
             return None
-        filepath = self.output_dir / filename if filename else self._new_path()
+        if filename:
+            filepath = self.output_dir / filename
+        else:
+            filepath = self.output_dir / f"{stem or free_stem(self.output_dir, [self.extension])}.{self.extension}"
         self._write(items, filepath)
         return str(filepath)
-
-    def _new_path(self) -> Path:
-        """Timestamped path that never overwrites an export from the same second."""
-        stem = f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        filepath = self.output_dir / f"{stem}.{self.extension}"
-        counter = 1
-        while filepath.exists():
-            filepath = self.output_dir / f"{stem}_{counter}.{self.extension}"
-            counter += 1
-        return filepath
 
     def _write(self, items: List[Item], filepath: Path):
         raise NotImplementedError
@@ -179,10 +192,14 @@ class StorageManager:
         if formats is None:
             formats = self.config.export_formats
 
+        # Every file of one run shares a name, so a run's CSV and JSONL are easy to pair up.
+        extensions = [self.exporters[fmt.value].extension for fmt in formats]
+        stem = free_stem(Path(self.config.output_dir), extensions, run_label(self.config.start_urls))
+
         results: Dict[str, Optional[str]] = {}
         for fmt in formats:
             try:
-                results[fmt.value] = self.exporters[fmt.value].export(items)
+                results[fmt.value] = self.exporters[fmt.value].export(items, stem=stem)
             except Exception as e:
                 results[fmt.value] = None
                 self.errors[fmt.value] = f"{type(e).__name__}: {e}"

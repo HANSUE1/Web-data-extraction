@@ -106,7 +106,7 @@ class RobotsChecker:
             self._failures[base_url] = error
             return Protego.parse(DISALLOW_EVERYTHING), self.FAILURE_TTL
 
-        if status in (401, 403) or status >= 500:
+        if status in (401, 403, 429) or status >= 500:
             self._failures[base_url] = f"robots.txt returned HTTP {status}"
             return Protego.parse(DISALLOW_EVERYTHING), self.FAILURE_TTL
         if status >= 400:

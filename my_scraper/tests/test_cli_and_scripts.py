@@ -13,6 +13,7 @@ from aiohttp import web
 from my_scraper.tests.conftest import html_page
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+EXAMPLE = REPO_ROOT / "examples" / "books_toscrape.py"
 
 
 def run_python(*args, cwd=None):
@@ -96,14 +97,14 @@ def test_resume_after_the_process_is_killed(site):
     process.kill()  # no chance to clean up, like a crash or power cut
     process.wait()
 
-    assert not list(Path("output").glob("*.jsonl"))
+    assert not list(Path("outputs/results").glob("*.jsonl"))
     fetched_before_kill = sum(site.hits[path] for path in pages)
     assert 15 <= fetched_before_kill < len(pages)
 
     result = cli_as_module(*args, "--resume")
 
     assert result.returncode == 0, result.stderr
-    exported = next(Path("output").glob("*.jsonl")).read_text(encoding="utf-8").splitlines()
+    exported = next(Path("outputs/results").glob("*.jsonl")).read_text(encoding="utf-8").splitlines()
     titles = [json.loads(line)["title"] for line in exported]
     assert len(titles) == 41
     assert len(set(titles)) == 41  # nothing lost, nothing doubled
@@ -123,7 +124,7 @@ def test_cli_loads_a_nested_config_file(site):
     result = cli_as_module("--config", "config.json")
 
     assert result.returncode == 0, result.stderr
-    assert len(list(Path("output").glob("*.json"))) == 1
+    assert len(list(Path("outputs/results").glob("*.json"))) == 1
 
 
 def test_cli_rate_limit_below_one(site):
@@ -151,7 +152,7 @@ def test_cli_explains_bad_input(args, message):
 
 def test_example_script_imports_from_any_folder():
     code = ("import runpy, sys; sys.argv=['x']; "
-            f"m = runpy.run_path(r'{REPO_ROOT / 'my_scraper' / 'example_usage.py'}', run_name='check'); "
+            f"m = runpy.run_path(r'{EXAMPLE}', run_name='check'); "
             "print(m['QuickBooksScraper'].__name__)")
     result = run_python("-c", code)
 
@@ -160,8 +161,8 @@ def test_example_script_imports_from_any_folder():
 
 
 def test_parse_product_extracts_a_book():
-    sys.path.insert(0, str(REPO_ROOT))
-    from my_scraper.example_usage import parse_product
+    import runpy
+    parse_product = runpy.run_path(str(EXAMPLE), run_name="check")["parse_product"]
 
     html = """
     <div class="product_main"><h1> A Book </h1><p class="price_color">£51.77</p>
@@ -183,68 +184,3 @@ def test_parse_product_extracts_a_book():
     assert book["availability_qty"] == 22
     assert book["num_reviews"] == 7
     assert book["image"] == "https://books.toscrape.com/catalogue/media/cover.jpg"
-
-
-def simple_scraper(*args):
-    return run_python(REPO_ROOT / "scrape_simple.py", *args)
-
-
-def test_scrape_simple_extracts_items(site):
-    site.add_raw("/list/", '<div class="r"><a href="/1"> One </a></div><div class="r"><a href="/2">Two</a></div>',
-                 "text/html")
-
-    result = simple_scraper("--url", site.url + "/list/", "--item", ".r",
-                            "--field", "name:a::text", "--field", "link:a::attr(href)")
-
-    assert result.returncode == 0, result.stderr
-    saved = next(Path("outputs").glob("*/list.json"))  # /list/ names the file, not 'index'
-    assert json.loads(saved.read_text(encoding="utf-8")) == [
-        {"name": "One", "link": "/1"}, {"name": "Two", "link": "/2"},
-    ]
-
-
-def test_scrape_simple_obeys_robots(site):
-    site.add_raw("/robots.txt", "User-agent: *\nDisallow: /\n", "text/plain")
-    site.add("/", "home")
-
-    result = simple_scraper("--url", site.url + "/", "--item", "h1", "--field", "t:h1::text")
-
-    assert result.returncode == 1
-    assert "robots.txt does not allow" in result.stderr
-    assert site.hits["/"] == 0
-
-
-def test_scrape_simple_rejects_malformed_field(site):
-    result = simple_scraper("--url", site.url + "/", "--item", ".r", "--field", "noselector")
-
-    assert result.returncode == 2
-    assert "name:selector" in result.stderr
-
-
-@pytest.mark.parametrize("extra_args, expected", [
-    ([], "api"),
-    (["--item", ".quote", "--field", "text:.text::text"], "selectors"),
-])
-def test_scrape_simple_on_quotes_site_honours_selectors(monkeypatch, extra_args, expected):
-    sys.path.insert(0, str(REPO_ROOT))
-    import scrape_simple
-
-    used = []
-    monkeypatch.setattr(scrape_simple, "allowed_by_robots", lambda url: True)
-    monkeypatch.setattr(scrape_simple, "scrape_quotes_api", lambda: used.append("api") or [])
-    monkeypatch.setattr(scrape_simple, "scrape_generic", lambda *a: used.append("selectors") or [])
-    monkeypatch.setattr(sys, "argv", ["x", "--url", "https://quotes.toscrape.com/", *extra_args])
-
-    scrape_simple.main()
-
-    assert used == [expected]
-
-
-def test_check_output_summarises_newest_file():
-    Path("output").mkdir()
-    Path("output/run.jsonl").write_text('{"title": null, "price": "£1"}\n', encoding="utf-8")
-
-    result = run_python(REPO_ROOT / "check_output.py")
-
-    assert result.returncode == 0, result.stderr
-    assert "1 lines" in result.stdout

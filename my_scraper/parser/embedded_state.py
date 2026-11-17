@@ -236,7 +236,8 @@ def records_to_items(values: Any, page_url: str, source: str) -> List[Item]:
     if not by_shape:
         return []
     best = max(by_shape.values(), key=_score)
-    return [_normalize(record, page_url, source) for record in best]
+    unique = {json.dumps(record, sort_keys=True, default=str): record for record in best}
+    return [_normalize(record, page_url, source) for record in unique.values()]
 
 
 def embedded_items(html: str, page_url: str) -> List[Item]:

@@ -3,6 +3,7 @@ import hashlib
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 import aiohttp
 import charset_normalizer
@@ -14,7 +15,7 @@ from my_scraper.config.settings import FetcherType
 from my_scraper.core.page_checks import classify_page
 from my_scraper.fetcher.browser import BrowserFetcher, BrowserUnavailable
 from my_scraper.utils.http import create_session
-from my_scraper.utils.urls import has_route_fragment
+from my_scraper.utils.urls import has_route_fragment, site_key
 
 # Below this much visible text, an HTML page is probably rendered by JavaScript.
 MIN_VISIBLE_TEXT = 200
@@ -89,7 +90,13 @@ class StaticFetcher:
         if result["status_code"] != 200 or (content_type and "html" not in content_type.lower()):
             return None
         delay, target = get_meta_refresh(result["content"][:META_REFRESH_SCAN_CHARS], result["final_url"])
-        return target if target and delay <= MAX_META_REFRESH_DELAY else None
+        if not target or delay > MAX_META_REFRESH_DELAY:
+            return None
+        # A refresh to another site would skip that site's robots.txt, blocklist and pacing.
+        # The crawler sees the refresh page instead, and that site can be crawled on its own.
+        if site_key(urlsplit(target).netloc) != site_key(urlsplit(result["final_url"]).netloc):
+            return None
+        return target
 
     async def _get(self, url: str, headers: Optional[Dict[str, str]]) -> Dict[str, Any]:
         if self._session is None or self._session.closed:
