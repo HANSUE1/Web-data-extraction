@@ -14,7 +14,7 @@ from my_scraper.fetcher.smart_fetcher import SmartFetcher, StaticFetcher
 from my_scraper.parser import documents
 from my_scraper.parser.universal_parser import ContentTypeDetector, UniversalParser
 from my_scraper.storage.multi_format import CSVExporter
-from my_scraper.utils.politeness import RateLimiter, RobotsChecker
+from my_scraper.utils.politeness import PolitenessManager, RateLimiter, RobotsChecker
 from my_scraper.utils.retry import HttpStatusError, RetryManager
 
 
@@ -95,6 +95,18 @@ def test_robots_is_fetched_once_for_concurrent_checks(site):
 
     assert all(asyncio.run(many()))
     assert site.hits["/robots.txt"] == 1
+
+
+def test_ignoring_robots_matches_the_listed_sites_and_their_subdomains():
+    config = CrawlConfig(name="t", start_urls=[])
+    config.robots.ignore_for = ["WebScraper.io", "https://shop.test/any/page", " "]
+    politeness = PolitenessManager(config)
+
+    assert politeness.ignores_robots("https://webscraper.io/test-sites/pagination/Ferrari")
+    assert politeness.ignores_robots("https://www.webscraper.io/x")
+    assert politeness.ignores_robots("http://shop.test:8080/cart")
+    assert not politeness.ignores_robots("https://notwebscraper.io/x")
+    assert not politeness.ignores_robots("https://webscraper.io.evil.test/x")
 
 
 # --- Retry -------------------------------------------------------------------
@@ -418,6 +430,21 @@ def test_csv_keeps_nested_values_as_json_and_handles_uneven_items():
 
     assert json.loads(rows[0]["a"]) == {"x": 1}
     assert json.loads(rows[1]["b"]) == [1, 2]
+
+
+def test_csv_gives_each_detail_its_own_column():
+    path = CSVExporter("out").export([
+        {"title": "Ferrari F40 1984", "attributes": {"Year": "1984", "Mileage": "141 828 km", "title": "clash"}},
+        {"title": "BMW E24", "attributes": {"Year": "1954"}},
+    ])
+
+    with open(path, encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    assert rows[0]["Year"] == "1984" and rows[0]["Mileage"] == "141 828 km"
+    assert rows[0]["title"] == "Ferrari F40 1984"
+    assert json.loads(rows[0]["attributes"]) == {"title": "clash"}  # never overwrites a field
+    assert rows[1]["Year"] == "1954" and rows[1]["attributes"] == ""
 
 
 def test_csv_with_no_items_writes_nothing():

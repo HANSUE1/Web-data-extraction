@@ -32,6 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-depth", type=int, help="Maximum crawl depth")
     parser.add_argument("--respect-robots", action="store_true", default=None,
                         help="Respect robots.txt (the default; overrides a config file that disables it)")
+    parser.add_argument("--ignore-robots-for", action="append", metavar="HOST",
+                        help="Don't obey robots.txt on this site and its subdomains. Only for sites you "
+                             "own or may scrape. Repeat for more sites. Pacing and refusals still apply")
     parser.add_argument("--rate-limit", type=float, help="Requests per second, per domain (default: 1.0)")
     parser.add_argument("--use-browser", action="store_true", help="Fetch every page with the browser")
     parser.add_argument("--no-browser", action="store_true", help="Never use the browser, plain HTTP only")
@@ -132,6 +135,10 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
         config.output_dir = args.output_dir
     if args.respect_robots:
         config.robots.respect = True
+    if args.ignore_robots_for:
+        config.robots.ignore_for = [*config.robots.ignore_for, *args.ignore_robots_for]
+    if config.robots.ignore_for:
+        print(f"Not obeying robots.txt on: {', '.join(config.robots.ignore_for)}", file=sys.stderr)
     if args.use_browser and args.no_browser:
         parser.error("--use-browser and --no-browser contradict each other")
     if args.use_browser:

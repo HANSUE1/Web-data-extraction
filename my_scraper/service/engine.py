@@ -21,7 +21,7 @@ from my_scraper.config.settings import CrawlConfig, FetcherType
 from my_scraper.core.crawler import CrawlState, ProductionCrawler
 from my_scraper.core.links import base_url_of, page_links
 from my_scraper.fetcher.smart_fetcher import SmartFetcher
-from my_scraper.parser.auto_extractor import page_markdown
+from my_scraper.parser.auto_extractor import _describes_page, page_markdown
 from my_scraper.parser.universal_parser import ContentTypeDetector, ParsedPage
 from my_scraper.utils.politeness import PolitenessManager
 from my_scraper.utils.urls import normalize_url
@@ -36,6 +36,17 @@ RENDER_MODES = ("auto", "always", "never")
 
 DOCUMENT_SOURCES = ("json-ld", "microdata", "document")
 METADATA_FIELDS = ("description", "author", "date", "language", "image", "type")
+
+
+def _is_document(item: Dict[str, Any], page_url: str) -> bool:
+    """Whether an item is the page describing itself, not one of the things listed on it.
+
+    A product list marks each card up as a Product with its own link; those are items.
+    """
+    source = item.get("source")
+    if source == "document":
+        return True
+    return source in DOCUMENT_SOURCES and _describes_page(item, page_url)
 
 # What each refusal means to someone who just asked for a page.
 REFUSALS = {
@@ -162,13 +173,18 @@ class ScrapeService:
     """Scrape, crawl, map and extract, with one shared fetcher and politeness state."""
 
     def __init__(self, home: Optional[str] = None, user_agent: Optional[str] = None,
-                 rate_limit: Optional[float] = None, use_browser: bool = True):
+                 rate_limit: Optional[float] = None, use_browser: bool = True,
+                 ignore_robots_for: Optional[List[str]] = None):
         self.home = Path(home or os.environ.get("SCRAPER_HOME") or Path.home() / ".web-data-extraction")
         (self.home / "logs").mkdir(parents=True, exist_ok=True)
         (self.home / "jobs").mkdir(parents=True, exist_ok=True)
         self.user_agent = user_agent or os.environ.get("SCRAPER_USER_AGENT")
         self.rate_limit = rate_limit
         self.use_browser = use_browser
+        # Set by whoever runs the service, never by a request: the caller can't switch robots.txt off.
+        if ignore_robots_for is None:
+            ignore_robots_for = os.environ.get("SCRAPER_IGNORE_ROBOTS_FOR", "").split(",")
+        self.ignore_robots_for = [site.strip() for site in ignore_robots_for if site.strip()]
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._renew_shared()
@@ -201,6 +217,7 @@ class ScrapeService:
             config.robots.user_agent = self.user_agent
         if self.rate_limit:
             config.rate_limit.requests_per_second = self.rate_limit
+        config.robots.ignore_for = list(self.ignore_robots_for)
         return config
 
     @contextmanager
@@ -266,7 +283,8 @@ class ScrapeService:
     @staticmethod
     def _summary(result: Dict[str, Any], page: ParsedPage) -> Dict[str, Any]:
         """Title and metadata, from the page's own description of itself where it has one."""
-        document = next((item for item in page.items if item.get("source") in DOCUMENT_SOURCES), {})
+        url = result.get("final_url") or result["url"]
+        document = next((item for item in page.items if _is_document(item, url)), {})
         title = document.get("title")
         if not title and "html" in (result.get("headers") or {}).get("content-type", "html"):
             title = _html_title(result["content"])
@@ -297,7 +315,8 @@ class ScrapeService:
             "truncated": truncated,
         }
         if include_items:
-            items = [item for item in page.items if item.get("source") not in DOCUMENT_SOURCES]
+            page_url = result.get("final_url") or url
+            items = [item for item in page.items if not _is_document(item, page_url)]
             response["items"] = items[:MAX_ITEMS]
             response["items_total"] = len(items)
         if include_links and "html" in (result.get("headers") or {}).get("content-type", "html"):
@@ -378,7 +397,7 @@ class ScrapeService:
             if not markdown:
                 markdown = "\n\n".join(str(item["text"]) for item in items if item.get("text")) or None
             markdown, truncated = _truncate(markdown, max_chars)
-            document = next((item for item in items if item.get("source") in DOCUMENT_SOURCES), {})
+            document = next((item for item in items if _is_document(item, page_url)), {})
             pages.append({
                 "url": page_url,
                 "title": document.get("title") or (_html_title(html) if html else None),

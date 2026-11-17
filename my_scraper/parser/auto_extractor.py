@@ -92,6 +92,16 @@ DESCRIPTION_CLASSES = re.compile(r"desc|summary|excerpt|teaser|snippet|standfirs
 RATING_CLASSES = re.compile(r"rating|stars?(?![a-z])", re.IGNORECASE)
 RATING_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5"}
 RATING_VALUE = re.compile(r"(\d(?:[.,]\d+)?)\s*(?:out of|of|/)\s*(?:5|five|10)", re.IGNORECASE)
+RATING_NUMBER = re.compile(r"^\d(?:[.,]\d+)?$")
+AVAILABILITY_CLASSES = re.compile(r"availab|in-?stock|stock-?status", re.IGNORECASE)
+
+# "Year: 1984" inside a card. The label starts with a letter and is a few words at most,
+# so times ("10:30") and links ("https://...") are not mistaken for one.
+LABELLED_TEXT = re.compile(r"^([^\W\d_][^:]{0,58}?)\s*:\s+(?!//)(\S.*)$", re.UNICODE)
+MAX_LABELLED_TEXT = 120
+MAX_LABEL_WORDS = 5
+LABEL_HOLDERS = ("p", "li", "span", "div", "dd", "td")
+BLOCK_TAGS = {"p", "li", "div", "ul", "ol", "table", "section", "article"}
 
 COUNTER_TITLE = re.compile(r"^\W*\d[\d,.]*\s*[\w%]*\W*$", re.UNICODE)  # "54 comments", "2.34.2", "1,204"
 
@@ -230,8 +240,9 @@ def _normalize_entity(entity: Dict[str, Any], page_url: str) -> Item:
         "image": _url(_plain(image.get("url") if isinstance(image, dict) else image), page_url),
         "author": _plain(entity.get("author")),
         "date": _plain(entity.get("datePublished") or entity.get("startDate") or entity.get("datePosted")),
-        "price": _plain(offers.get("price") or offers.get("lowPrice")),
-        "currency": _plain(offers.get("priceCurrency")),
+        # Many sites put the price on the product itself rather than in an Offer.
+        "price": _plain(offers.get("price") or offers.get("lowPrice") or entity.get("price")),
+        "currency": _plain(offers.get("priceCurrency") or entity.get("priceCurrency")),
         "availability": availability.rsplit("/", 1)[-1] if availability else None,
         "rating": _plain(rating.get("ratingValue")),
         "brand": _plain(entity.get("brand")),
@@ -263,6 +274,31 @@ def _describes_page(item: Item, page_url: str) -> bool:
     if not location:
         return True
     return urlsplit(location).path.rstrip("/") == urlsplit(page_url).path.rstrip("/")
+
+
+def _card_link(item: Item, root, page_url: str) -> Optional[Tuple[str, Any]]:
+    """Where an entity lives when its name is a heading that links to another page.
+
+    A listing with a single card left on it marks that card up like a product page would.
+    The heading link is what tells the two apart: a page does not link its own name away.
+    """
+    title = _clean(item.get("title"))
+    if not title:
+        return None
+    for heading in root.iter("h1", "h2", "h3", "h4", "h5", "h6"):
+        if _text(heading) != title:
+            continue
+        links = [heading] if heading.tag == "a" else list(heading.iter("a"))
+        parent = heading.getparent()
+        if parent is not None and parent.tag == "a":
+            links.append(parent)
+        for link in links:
+            href = _url(link.get("href"), page_url)
+            if href and not _describes_page({"url": href}, page_url):
+                card = next((node for node in heading.iterancestors() if node.get("itemscope") is not None),
+                            heading.getparent())
+                return href, card
+    return None
 
 
 # --- 2. Repeated layouts -----------------------------------------------------
@@ -473,6 +509,10 @@ def _description_of(block, title: Optional[str]) -> Optional[str]:
 
 def _rating_of(block) -> Optional[str]:
     for element in _with_class(block, RATING_CLASSES):
+        for name in ("data-rating", "data-score", "data-value"):
+            value = (element.get(name) or "").strip()
+            if RATING_NUMBER.match(value):
+                return value
         for word in (element.get("class") or "").lower().split():
             if word in RATING_WORDS:
                 return RATING_WORDS[word]
@@ -480,6 +520,43 @@ def _rating_of(block) -> Optional[str]:
         match = RATING_VALUE.search(label)
         if match:
             return match.group(1)
+    return None
+
+
+def _in_stock_badge(element, block) -> bool:
+    """Whether an element sits in the card's availability badge."""
+    node = element
+    while node is not None:
+        if isinstance(node.tag, str) and _class_matches(node, AVAILABILITY_CLASSES):
+            return True
+        if node is block:
+            return False
+        node = node.getparent()
+    return False
+
+
+def _labelled_pairs(block) -> Optional[Dict[str, str]]:
+    """Details written as "Label: value", one to a line, such as "Mileage: 141 828 km"."""
+    pairs: Dict[str, str] = {}
+    for element in block.iter(*LABEL_HOLDERS):
+        if any(child.tag in BLOCK_TAGS for child in element.iterdescendants()):
+            continue  # only the innermost line, so a card's whole text is not one pair
+        if _in_stock_badge(element, block):
+            continue  # "Available: 4" is the availability, already its own field
+        text = _text(element)
+        match = LABELLED_TEXT.match(text) if len(text) <= MAX_LABELLED_TEXT else None
+        if match and len(match.group(1).split()) <= MAX_LABEL_WORDS:
+            pairs.setdefault(match.group(1).strip(), match.group(2).strip())
+        if len(pairs) >= MAX_ATTRIBUTE_PAIRS:
+            break
+    return pairs or None
+
+
+def _availability_of(block) -> Optional[str]:
+    for element in _with_class(block, AVAILABILITY_CLASSES):
+        text = _text(element)
+        if text and len(text) <= MAX_SHORT_FIELD:
+            return text
     return None
 
 
@@ -501,7 +578,9 @@ def _block_item(block, page_url: str) -> Item:
         "date": _date_of(block),
         "author": _author_of(block, title),
         "rating": _rating_of(block),
+        "availability": _availability_of(block),
         "description": _description_of(block, title),
+        "attributes": _labelled_pairs(block),
         "text": text if text != title else None,
         "source": "list",
     })
@@ -893,6 +972,11 @@ def _page_items(html: str, page_url: str, include_markdown: bool, errors: List[s
     root = Selector(text=html[:MAX_HTML_CHARS], type="html").root
     metadata = _attempt(_read_metadata, errors, {}, html, page_url)
     structured = _attempt(structured_items, errors, [], metadata, page_url)
+    if len(structured) == 1 and not structured[0].get("url"):
+        found = _attempt(_card_link, errors, None, structured[0], root, page_url)
+        if found:
+            link, card = found
+            structured = _fill_gaps([{**structured[0], "url": link}], [_block_item(card, page_url)])
 
     if len(structured) == 1 and _attempt(_is_detail_page, errors, True, structured[0], root, page_url):
         document = _attempt(document_item, errors, {}, html, root, metadata, page_url)

@@ -97,6 +97,38 @@ def test_scrape_returns_the_items_of_a_listing(site, service, call):
     assert page["items"][0]["price"] == "$10.00"
 
 
+def test_scrape_keeps_a_listing_marked_up_as_products(site, service, call):
+    # Each card is its own schema.org Product; none of them is the page itself.
+    cards = "".join(
+        f'<div class="card" itemscope itemtype="https://schema.org/Product">'
+        f'<h3 itemprop="name"><a href="/car/{n}">Classic car {n}</a></h3>'
+        f'<p itemprop="description">Fine old car number {n}</p><span itemprop="price">USD {n}00</span></div>'
+        for n in range(6))
+    site.add_raw("/cars", f"<html><head><title>All cars</title></head><body><main>{cards}</main></body></html>",
+                 "text/html")
+
+    page = call(service.scrape(site.url + "/cars"))
+
+    assert page["title"] == "All cars"
+    assert page["items_total"] == 6
+    assert [item["title"] for item in page["items"]] == [f"Classic car {n}" for n in range(6)]
+
+
+def test_service_skips_robots_only_where_its_operator_said(site, tmp_path, monkeypatch):
+    site.add_raw("/robots.txt", "User-agent: *\nDisallow: /private\n", "text/plain")
+    site.add_raw("/private/page", ARTICLE, "text/html")
+    monkeypatch.setenv("SCRAPER_IGNORE_ROBOTS_FOR", "127.0.0.1")
+    service = ScrapeService(home=str(tmp_path / "home"), rate_limit=1000, use_browser=False)
+
+    async def go():
+        try:
+            return await service.scrape(site.url + "/private/page")
+        finally:
+            await service.close()
+
+    assert asyncio.run(go())["title"] == "Tide tables explained"
+
+
 def test_markdown_is_cut_to_size(site, service, call):
     site.add_raw("/guide/one", ARTICLE, "text/html")
 

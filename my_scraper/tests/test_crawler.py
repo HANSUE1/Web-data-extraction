@@ -149,6 +149,20 @@ def test_robots_txt_is_obeyed(site, make_config):
     assert "robots_disallowed" in audit_statuses()
 
 
+def test_robots_txt_is_skipped_only_for_sites_the_user_lists(site, make_config):
+    site.add_raw("/robots.txt", "User-agent: *\nDisallow: /private\n", "text/plain")
+    site.add("/", "home", links=["/private/x", "/login"])
+    site.add("/private/x", "secret")
+    site.add("/login", "login")
+    config = make_config()
+    config.robots.ignore_for = ["127.0.0.1"]
+
+    _, results = run(config)
+
+    assert titles(results) == ["home", "secret"]
+    assert site.hits["/login"] == 0  # the other refusals still apply
+
+
 def test_blocked_url_is_skipped_without_a_request(site, make_config):
     site.add("/", "home", links=["/login", "/author/jane"])
     site.add("/login", "login")

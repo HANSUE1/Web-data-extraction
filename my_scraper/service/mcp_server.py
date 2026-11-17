@@ -3,7 +3,9 @@
 Run with `python -m my_scraper.service.mcp_server` (stdio, for local assistants), or add
 `--transport streamable-http --port 8788` to serve it over HTTP.
 
-Every request obeys robots.txt and the scraper's compliance rules. Pages that refuse
+Every request obeys robots.txt and the scraper's compliance rules. The one exception is a
+site the person running the server lists in SCRAPER_IGNORE_ROBOTS_FOR (comma-separated host
+names), for sites they own or may scrape; no request can add to that list. Pages that refuse
 come back as errors that say why, rather than as empty results.
 """
 import argparse

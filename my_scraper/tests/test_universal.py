@@ -161,6 +161,51 @@ def test_microdata_gains_the_fields_its_table_shows():
     assert items[1]["source"] == "microdata"
 
 
+def test_last_card_on_a_listing_keeps_its_own_link():
+    # Page 3 of a listing can hold one card, marked up just like a product page would be.
+    html = listing('<div itemscope itemtype="https://schema.org/Product">'
+                   '<h3 itemprop="name"><a href="/car/81">Ferrari 250 GT 1950</a></h3>'
+                   '<p itemprop="description">Early production</p>'
+                   '<span itemprop="price">USD 228 180</span><meta itemprop="priceCurrency" content="USD"></div>'
+                   f"<p>{FILLER}</p>")
+
+    [item] = extract_items(html, URL + "?page=3")
+
+    assert item["url"] == "https://shop.test/car/81"
+    assert item["price"] == "USD 228 180"
+    assert item["currency"] == "USD"
+
+
+def test_cards_keep_their_labelled_details_rating_and_availability():
+    def car(n):
+        return (f'<div class="card"><div class="availability"><p class="badge">Available: {n}</p></div>'
+                f'<h3><a href="/car/{n}">Classic car model {n}</a></h3>'
+                f'<p class="card-text"><b>Year: </b> 19{n}5</p><p class="card-text"><b>Mileage: </b> {n}1 000 km</p>'
+                f'<p>Opens at 10:30, see https://example.test</p>'
+                f'<div class="rating" data-rating="{n % 5 + 1}"></div><p class="price">${n}9 000</p></div>')
+
+    items = extract(listing("".join(car(n) for n in range(1, 7))))
+
+    assert len(items) == 6
+    for item in items:  # every card, however many element objects came and went before it
+        assert set(item["attributes"]) == {"Year", "Mileage"}  # the stock badge is not a detail
+    assert items[1]["attributes"] == {"Year": "1925", "Mileage": "21 000 km"}
+    assert items[1]["rating"] == "3"
+    assert items[1]["availability"] == "Available: 2"
+
+
+def test_product_page_whose_heading_is_not_a_link_stays_the_page():
+    html = ('<html><body><div itemscope itemtype="https://schema.org/Product">'
+            '<h1 itemprop="name">Blue kettle</h1><span itemprop="price">24.99</span></div>'
+            f"<p>{FILLER}</p></body></html>")
+
+    [item] = extract_items(html, "https://shop.test/kettle")
+
+    assert item["title"] == "Blue kettle"
+    assert "url" not in item or item["url"] == "https://shop.test/kettle"
+    assert item["price"] == "24.99"
+
+
 def test_grid_split_into_rows_is_one_list():
     def row(start):
         cells = "".join(f'<div class="cell"><h3>Item {i}</h3><p>Detail {i}</p></div>' for i in range(start, start + 3))

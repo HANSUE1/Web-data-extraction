@@ -165,6 +165,13 @@ class RateLimiter:
                 self._intervals[domain] = eased
 
 
+def _host_of(entry: str) -> str:
+    """The host name in "example.com", "Example.com." or "https://example.com/page"."""
+    entry = entry.strip()
+    host = urlparse(entry if "://" in entry else "//" + entry).hostname or ""
+    return host.rstrip(".").lower()
+
+
 class PolitenessManager:
     """Manage all politeness policies."""
 
@@ -172,10 +179,16 @@ class PolitenessManager:
         self.robots_checker = RobotsChecker(config.robots.user_agent, config.robots.cache_ttl)
         self.rate_limiter = RateLimiter(config.rate_limit.requests_per_second)
         self.respect_robots = config.robots.respect
+        self.ignore_robots_for = [_host_of(entry) for entry in config.robots.ignore_for if _host_of(entry)]
+
+    def ignores_robots(self, url: str) -> bool:
+        """Whether the user chose not to obey this site's robots.txt."""
+        host = _host_of(url)
+        return any(host == site or host.endswith("." + site) for site in self.ignore_robots_for)
 
     async def can_fetch(self, url: str) -> bool:
         """Check if URL can be fetched, and adopt any Crawl-delay the site asks for."""
-        if not self.respect_robots:
+        if not self.respect_robots or self.ignores_robots(url):
             return True
         delay = await self.robots_checker.crawl_delay(url)
         if delay:

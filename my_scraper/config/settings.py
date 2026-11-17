@@ -25,6 +25,9 @@ class RobotsConfig:
     respect: bool = True
     cache_ttl: int = 3600  # seconds
     user_agent: str = "ProductionScraperBot/1.0 (+https://example.com/bot; compliance@example.com)"
+    # Sites whose robots.txt is not obeyed, by host name ("example.com" also covers its subdomains).
+    # Only for sites you own or have permission to scrape. Pacing and refusals still apply.
+    ignore_for: List[str] = field(default_factory=list)
 
 
 @dataclass

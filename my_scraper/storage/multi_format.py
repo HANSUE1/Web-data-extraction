@@ -46,6 +46,30 @@ def _all_keys(items: List[Item]) -> List[str]:
     return sorted({key for item in items for key in item})
 
 
+def _flatten_attributes(items: List[Item]) -> List[Item]:
+    """Give each detail ("Year", "Mileage") its own column in a table.
+
+    A detail whose name is already a field stays inside "attributes", so nothing is overwritten.
+    """
+    flat = []
+    for item in items:
+        attributes = item.get("attributes")
+        if not isinstance(attributes, dict):
+            flat.append(item)
+            continue
+        row = {key: value for key, value in item.items() if key != "attributes"}
+        kept = {}
+        for name, value in attributes.items():
+            if name in row:
+                kept[name] = value
+            else:
+                row[name] = value
+        if kept:
+            row["attributes"] = kept
+        flat.append(row)
+    return flat
+
+
 class FileExporter:
     """Base class: picks the output path, subclasses write the file."""
 
@@ -105,6 +129,7 @@ class CSVExporter(FileExporter):
     skip_when_empty = True
 
     def _write(self, items, filepath):
+        items = _flatten_attributes(items)
         with open(filepath, "w", newline="", encoding="utf-8", errors="replace") as f:
             writer = csv.DictWriter(f, fieldnames=_all_keys(items))
             writer.writeheader()
@@ -120,6 +145,7 @@ class SQLiteExporter(FileExporter):
     table_name = "items"
 
     def _write(self, items, filepath):
+        items = _flatten_attributes(items)
         columns = _all_keys(items)
         names = ['"{}"'.format(column.replace('"', '""')) for column in columns]
         definitions = ", ".join(f"{name} TEXT" for name in names)
