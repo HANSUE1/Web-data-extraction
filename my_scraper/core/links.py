@@ -1,9 +1,10 @@
 """Find the links on a page worth following, and leave the ones that are not."""
 import re
 from typing import List, Optional
-from urllib.parse import urljoin
 
 from parsel import Selector
+
+from my_scraper.utils.urls import join_url
 
 NEXT_LABELS = {
     "next", "next page", "next »", "next ›", "next >", "older", "older posts", "older entries", "›", "»", ">", "→",
@@ -37,7 +38,7 @@ def _is_hidden_link(element) -> bool:
 def base_url_of(sel: Selector, page_url: str) -> str:
     """The address relative links resolve against, which <base href> can change."""
     base = sel.xpath("//base/@href").get()
-    return urljoin(page_url, base) if base else page_url
+    return join_url(page_url, base) if base else page_url
 
 
 def forbids_following(sel: Selector) -> bool:

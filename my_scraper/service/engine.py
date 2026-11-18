@@ -13,7 +13,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from parsel import Selector
 
@@ -24,7 +24,7 @@ from my_scraper.fetcher.smart_fetcher import SmartFetcher
 from my_scraper.parser.auto_extractor import _describes_page, page_markdown
 from my_scraper.parser.universal_parser import ContentTypeDetector, ParsedPage
 from my_scraper.utils.politeness import PolitenessManager
-from my_scraper.utils.urls import normalize_url
+from my_scraper.utils.urls import join_url, normalize_url
 
 DEFAULT_MAX_CHARS = 20_000
 MAX_ITEMS = 100
@@ -335,7 +335,7 @@ class ScrapeService:
         links: List[str] = []
         for href in page_links(sel):
             try:
-                link = normalize_url(urljoin(base, href.strip()))
+                link = normalize_url(join_url(base, href.strip()))
             except ValueError:
                 continue
             if urlparse(link).scheme in ("http", "https") and link not in links:

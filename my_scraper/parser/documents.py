@@ -2,10 +2,11 @@
 import csv
 import io
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
 
 from lxml import etree
 from lxml import html as lxml_html
+
+from my_scraper.utils.urls import join_url
 
 Item = Dict[str, Any]
 
@@ -126,7 +127,7 @@ def parse_feed(root, page_url: str) -> List[Item]:
         link = _entry_link(entry)
         item = {
             "title": _text_of(_child(entry, "title")),
-            "url": urljoin(page_url, link) if link else None,
+            "url": join_url(page_url, link) if link else None,
             "description": _text_of(_child(entry, "description", "summary", "content", "encoded")),
             "date": _text_of(_child(entry, "pubdate", "published", "updated", "date")),
             "author": _text_of(name if name is not None else author),

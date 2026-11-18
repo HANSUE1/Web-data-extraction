@@ -7,9 +7,10 @@ way the records are cleaner than anything recoverable from the finished layout.
 import json
 import re
 from typing import Any, Dict, Iterator, List, Optional
-from urllib.parse import urljoin
 
 from parsel import Selector
+
+from my_scraper.utils.urls import join_url
 
 Item = Dict[str, Any]
 
@@ -171,7 +172,7 @@ def _first(record: Dict[str, Any], keys: tuple) -> Optional[str]:
 
 def _web_address(value: Optional[str], page_url: str) -> Optional[str]:
     if value and (value.startswith(("http://", "https://", "//", "/"))):
-        return urljoin(page_url, value)
+        return join_url(page_url, value)
     return None
 
 

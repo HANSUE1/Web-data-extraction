@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from parsel import Selector
 
@@ -34,7 +34,7 @@ from my_scraper.storage.multi_format import StorageManager
 from my_scraper.utils.logs import StructuredLogger, log_parsing, log_request
 from my_scraper.utils.politeness import PolitenessManager
 from my_scraper.utils.retry import HttpStatusError, RetryManager
-from my_scraper.utils.urls import domain_key, facet_key, is_action, is_asset, is_trap, normalize_url, site_key
+from my_scraper.utils.urls import domain_key, facet_key, is_action, is_asset, is_trap, join_url, normalize_url, site_key
 
 CHECKPOINT_EVERY_PAGES = 10
 
@@ -803,7 +803,7 @@ class ProductionCrawler:
         home = self._site_of(base_url)
         for link in links:
             try:
-                url = normalize_url(urljoin(base_url, link.strip()))
+                url = normalize_url(join_url(base_url, link.strip()))
             except ValueError:  # malformed href
                 continue
             link_depth = depth + 1 if hop and self._site_of(url) != home else depth

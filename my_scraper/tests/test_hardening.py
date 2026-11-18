@@ -25,7 +25,7 @@ from my_scraper.tests.conftest import FILLER, html_page
 from my_scraper.utils.http import create_session
 from my_scraper.utils.politeness import RobotsChecker
 from my_scraper.utils.retry import RetryManager
-from my_scraper.utils.urls import domain_key, is_trap, normalize_url, site_key
+from my_scraper.utils.urls import domain_key, is_trap, join_url, normalize_url, site_key
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 URL = "https://site.test/page"
@@ -478,3 +478,11 @@ def test_one_long_item_does_not_hide_a_list():
 
     assert len(items) == 10
     assert {item["source"] for item in items} == {"list"}
+
+
+def test_empty_query_href_clears_the_query():
+    # urljoin keeps ?seed=1 here; RFC 3986 (and every browser) drops it
+    assert join_url("https://w.dev/storage-test?seed=1", "?") == "https://w.dev/storage-test"
+    assert join_url("https://w.dev/a?x=1", "?#top") == "https://w.dev/a#top"
+    assert join_url("https://w.dev/a?x=1", "?page=2") == "https://w.dev/a?page=2"
+    assert join_url("https://w.dev/a?x=1", "b") == "https://w.dev/b"

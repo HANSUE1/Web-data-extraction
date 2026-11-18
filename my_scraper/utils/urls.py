@@ -2,7 +2,7 @@
 import re
 from collections import Counter
 from datetime import date
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from w3lib.url import canonicalize_url
 
@@ -40,6 +40,14 @@ CALENDAR_YEARS_AHEAD = 2
 MAX_URL_LENGTH = 2000
 MAX_PATH_DEPTH = 16
 MAX_SEGMENT_REPEATS = 3  # /a/b/a/b/a/b is a link loop, not a real page
+
+
+def join_url(base: str, href: str) -> str:
+    """urljoin, fixed for an empty query: per RFC 3986, href "?" clears the base's query; urljoin keeps it."""
+    joined = urljoin(base, href)
+    if href.strip().startswith("?") and not urlsplit(href.strip()).query:
+        joined = urlunsplit(urlsplit(joined)._replace(query=""))
+    return joined
 
 
 def normalize_url(url: str) -> str:

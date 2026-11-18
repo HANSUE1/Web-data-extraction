@@ -15,7 +15,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 import extruct
 import trafilatura
@@ -24,6 +24,7 @@ from parsel import Selector
 
 from my_scraper.parser.documents import unique_headers
 from my_scraper.parser.embedded_state import embedded_items, records_to_items
+from my_scraper.utils.urls import join_url
 
 Item = Dict[str, Any]
 
@@ -170,7 +171,7 @@ def _url(value: Optional[str], page_url: str) -> Optional[str]:
     if not value:
         return None
     try:
-        return urljoin(page_url, value.strip())
+        return join_url(page_url, value.strip())
     except ValueError:
         return None
 

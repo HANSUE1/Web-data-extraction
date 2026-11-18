@@ -4,9 +4,10 @@ Built from the HTML the crawler already has, so drawing the page costs the site 
 """
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import urljoin
 
 import lxml.html
+
+from my_scraper.utils.urls import join_url
 
 MAX_HTML_CHARS = 400_000   # enough for the top of any page, and fast to parse on the event loop
 MAX_BLOCKS = 70
@@ -105,7 +106,7 @@ def _segments(element, base: str, href: Optional[str]) -> List[Segment]:
         if tag in INLINE:
             link = href
             if tag == "a" and child.get("href") and not child.get("href", "").startswith(("#", "javascript:", "mailto:")):
-                link = urljoin(base, child.get("href"))
+                link = join_url(base, child.get("href"))
             parts.extend(_segments(child, base, link))
         if child.tail:
             parts.append((child.tail, href))

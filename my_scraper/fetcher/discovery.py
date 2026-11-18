@@ -11,6 +11,8 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from parsel import Selector
 
+from my_scraper.utils.urls import join_url
+
 SITEMAP_LOCATIONS = ("/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml", "/wp-sitemap.xml", "/sitemap.xml.gz")
 
 FEED_TYPES = ("application/rss+xml", "application/atom+xml", "application/feed+json")
@@ -36,7 +38,7 @@ def feed_links(html: str, base_url: str) -> List[str]:
     links = []
     for link in Selector(text=html, type="html").xpath("//link[@rel='alternate'][@href]"):
         if link.attrib.get("type", "").lower() in FEED_TYPES:
-            links.append(urljoin(base_url, link.attrib["href"]))
+            links.append(join_url(base_url, link.attrib["href"]))
     return links
 
 
