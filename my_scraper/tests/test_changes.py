@@ -36,7 +36,7 @@ def test_first_run_saves_a_baseline_and_writes_no_report(site, make_config):
     assert crawler.changes.baseline
     assert crawler.changes.report_path is None
     assert Path(crawler.changes.snapshot_path).exists()
-    assert not list(Path("outputs/results").glob("changes_*.json"))
+    assert not list(Path("outputs/results").rglob("changes_*.json"))
 
 
 def test_second_run_reports_new_changed_and_removed_items(site, make_config):

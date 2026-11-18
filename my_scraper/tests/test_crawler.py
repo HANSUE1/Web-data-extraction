@@ -227,7 +227,7 @@ def test_exports_all_formats_to_the_configured_directory(site, make_config):
 
     assert set(crawler.exports) == {"json", "jsonl", "csv", "sqlite"}
     for path in crawler.exports.values():
-        assert Path(path).parent.name == "custom_out"
+        assert Path(path).parent.parent.name == "custom_out"  # <custom_out>/<run>/<file>
         assert Path(path).stat().st_size > 0
 
     with sqlite3.connect(crawler.exports["sqlite"]) as conn:
@@ -267,7 +267,7 @@ def test_interrupted_crawl_saves_results_and_resumes(site, make_config):
 
     assert titles(results) == ["home", "later", "slow"]  # one complete result set
     assert site.hits["/"] == 1  # finished pages are not fetched again
-    assert len(list(Path("outputs/results").glob("*.jsonl"))) == 2  # the resume keeps the first export
+    assert len(list(Path("outputs/results").rglob("*.jsonl"))) == 2  # the resume keeps the first export
 
 
 def test_corrupt_checkpoint_is_ignored(tmp_path):

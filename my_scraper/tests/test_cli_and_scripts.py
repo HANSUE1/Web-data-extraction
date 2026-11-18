@@ -43,11 +43,11 @@ def test_cli_crawls_and_exports(site, cli):
     assert result.returncode == 0, result.stderr
     assert "Extracted 2 items from 2 pages" in result.stdout
 
-    exported = list(Path("results").glob("*.jsonl"))
+    exported = list(Path("results").rglob("*.jsonl"))
     assert len(exported) == 1
     items = [json.loads(line) for line in exported[0].read_text(encoding="utf-8").splitlines()]
     assert sorted(item["heading"] for item in items) == ["home", "page a"]
-    assert len(list(Path("results").glob("*.csv"))) == 1
+    assert len(list(Path("results").rglob("*.csv"))) == 1
 
 
 def test_cli_summary_says_why_nothing_was_extracted(site):
@@ -97,14 +97,14 @@ def test_resume_after_the_process_is_killed(site):
     process.kill()  # no chance to clean up, like a crash or power cut
     process.wait()
 
-    assert not list(Path("outputs/results").glob("*.jsonl"))
+    assert not list(Path("outputs/results").rglob("*.jsonl"))
     fetched_before_kill = sum(site.hits[path] for path in pages)
     assert 15 <= fetched_before_kill < len(pages)
 
     result = cli_as_module(*args, "--resume")
 
     assert result.returncode == 0, result.stderr
-    exported = next(Path("outputs/results").glob("*.jsonl")).read_text(encoding="utf-8").splitlines()
+    exported = next(Path("outputs/results").rglob("*.jsonl")).read_text(encoding="utf-8").splitlines()
     titles = [json.loads(line)["title"] for line in exported]
     assert len(titles) == 41
     assert len(set(titles)) == 41  # nothing lost, nothing doubled
@@ -124,7 +124,7 @@ def test_cli_loads_a_nested_config_file(site):
     result = cli_as_module("--config", "config.json")
 
     assert result.returncode == 0, result.stderr
-    assert len(list(Path("outputs/results").glob("*.json"))) == 1
+    assert len(list(Path("outputs/results").rglob("*.json"))) == 1
 
 
 def test_cli_rate_limit_below_one(site):

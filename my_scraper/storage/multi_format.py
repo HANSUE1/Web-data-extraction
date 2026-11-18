@@ -184,23 +184,40 @@ class StorageManager:
 
     def __init__(self, config):
         self.config = config
-        self.exporters = {name: cls(config.output_dir) for name, cls in self.EXPORTERS.items()}
         self.errors: Dict[str, str] = {}
+        self.last_run_dir: Optional[str] = None  # the folder this run's files went to
 
     def export(self, items: List[Item], formats: List = None) -> Dict[str, Optional[str]]:
-        """Export to all configured formats. One failing must not cost the others their file."""
+        """Export to all configured formats. One failing must not cost the others their file.
+
+        Each run gets its own folder, <output_dir>/<site>_<time>/, so one scrape is one folder.
+        """
         if formats is None:
             formats = self.config.export_formats
+        if not formats:
+            return {}
 
-        # Every file of one run shares a name, so a run's CSV and JSONL are easy to pair up.
-        extensions = [self.exporters[fmt.value].extension for fmt in formats]
-        stem = free_stem(Path(self.config.output_dir), extensions, run_label(self.config.start_urls))
+        run_dir = self._new_run_dir()
+        self.last_run_dir = str(run_dir)
+        stem = run_dir.name  # files share the folder's name, so a run's CSV and JSONL pair up
 
         results: Dict[str, Optional[str]] = {}
         for fmt in formats:
             try:
-                results[fmt.value] = self.exporters[fmt.value].export(items, stem=stem)
+                exporter = self.EXPORTERS[fmt.value](str(run_dir))
+                results[fmt.value] = exporter.export(items, filename=f"{stem}.{exporter.extension}")
             except Exception as e:
                 results[fmt.value] = None
                 self.errors[fmt.value] = f"{type(e).__name__}: {e}"
         return results
+
+    def _new_run_dir(self) -> Path:
+        """A fresh folder named <site>_<time>, numbered if two runs land in the same second."""
+        root = Path(self.config.output_dir)
+        base = f"{run_label(self.config.start_urls)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        name, counter = base, 1
+        while (root / name).exists():
+            name, counter = f"{base}_{counter}", counter + 1
+        run_dir = root / name
+        run_dir.mkdir(parents=True)
+        return run_dir

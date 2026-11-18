@@ -85,13 +85,23 @@ def test_raw_html_follows_the_state_folder(site, make_config):
     assert not Path("outputs/state").exists()
 
 
+def test_each_scrape_gets_its_own_results_folder(site, make_config):
+    site.add("/", "home")
+
+    run(make_config(export_formats=[ExportFormat.JSONL, ExportFormat.CSV]))
+
+    runs = [p for p in Path("outputs/results").iterdir() if p.is_dir()]
+    assert len(runs) == 1 and runs[0].name.startswith("127.0.0.1_")
+    assert {p.suffix for p in runs[0].iterdir()} == {".jsonl", ".csv"}  # both formats, one folder
+
+
 def test_everything_the_crawler_writes_goes_under_outputs(site, make_config):
     site.add("/", "home")
 
     run(make_config(incremental=True))
 
     assert sorted(path.name for path in Path(".").iterdir()) == ["outputs"]
-    assert any(Path("outputs/results").glob("*.jsonl"))
+    assert any(Path("outputs/results").rglob("*.jsonl"))
     assert Path("outputs/logs/audit.log").exists()
     assert Path("outputs/state/etag_cache.db").exists()
 

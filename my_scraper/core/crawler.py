@@ -257,7 +257,8 @@ class ProductionCrawler:
         identity = {**self.config.selectors, **{f"example:{k}": v for k, v in self.config.examples.items()}}
         path = crawl_file(start_urls, self.state_dir / "snapshots", identity, self.config.item_selector)
         try:
-            self.changes = track(self.results, path, self.config.output_dir)
+            # Into this run's own folder, alongside its exports, when there is one.
+            self.changes = track(self.results, path, self.storage.last_run_dir or self.config.output_dir)
         except OSError as e:
             self.logger.error("change_tracking_failed", error=str(e))
             return
