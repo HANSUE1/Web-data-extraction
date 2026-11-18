@@ -1,7 +1,7 @@
 /* Seine Studio: router, views, jobs poller and command palette. No build step. */
 
 import { $, $$, wait, reduced, nf, el, icon, api, toast, confirmBox, fmtBytes, ago, clock, mark, countUp, debounce, store, copy, seg, tabs } from "./ui.js";
-import { heroNet, Radar } from "./radar.js";
+import { heroNet, SilkMap } from "./radar.js";
 import { pageStatus, PageWalk } from "./spider.js";
 
 // ---------------------------------------------------------------- state
@@ -448,7 +448,7 @@ $("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") cl
 VIEWS.live = async (root, parts, ctx) => {
   crumbs("Seine", "Live");
   root.append(el("div", { class: "page-head" }, el("div", {}, el("h1", {}, "The net, ", el("em", { text: "live" })),
-    el("p", { text: "Watch the spider walk each page it crawls: it drops in on a thread, wraps every item it takes and taps the links it will follow next. The radar on the left maps the site: one slice per section, one ring per level deeper." })),
+    el("p", { text: "Watch the spider walk each page it crawls: it drops in on a thread, wraps every item it takes and taps the links it will follow next. The silk map on the left is the site as a web: each page hangs from its parent path, sections cluster together, and every fetch sends a pulse down the strands to that page." })),
     el("div", { class: "actions" }, el("a", { class: "btn primary", href: "#/extract" }, icon("bolt"), "New extraction"))));
   const listBox = el("div", { class: "jobs" });
   const mapSlot = el("div");
@@ -485,7 +485,7 @@ VIEWS.live = async (root, parts, ctx) => {
     const canvas = el("canvas");
     const radarStats = el("div", { class: "radar-stats" });
     const netCard = el("div", { class: "card net" }, canvas, tip,
-      el("div", { class: "nettitle" }, el("div", { class: "eyebrow", text: "crawl radar" }), radarStats),
+      el("div", { class: "nettitle" }, el("div", { class: "eyebrow", text: "silk map" }), radarStats),
       el("div", { class: "legend" }, ...[["ok", "fetched"], ["refused", "refused"], ["error", "error"], ["pending", "seen"]].map(([k, l]) => el("span", {}, el("i", { style: `background:var(${{ ok: "--lime", refused: "--coral", error: "--amber", pending: "--ink-3" }[k]})` }), l))));
     feedEl = el("div", { class: "feed", role: "log" });
     const filter = { level: "all" };
@@ -506,7 +506,7 @@ VIEWS.live = async (root, parts, ctx) => {
     monitor.replaceChildren(head, banner,
       el("div", { class: "gauges" }, el("div", { class: "card ring" }, circle, el("div", { class: "lbl" }, ringVal, el("span", { text: "pages" }))), gItems, gQueue, gRef),
       spiderCard, feedCard);
-    net = new Radar(canvas, tip, radarStats);
+    net = new SilkMap(canvas, tip, radarStats);
     spider = new PageWalk({ canvas: spiderCanvas, sheets,
       tab: (text) => { tabTitle.textContent = text; },
       address: (url, status) => { addr.textContent = url; chip.className = "addr-chip " + status; chip.textContent = status === "ok" ? "200" : status === "refused" ? "refused" : status === "error" ? "error" : "…"; },
