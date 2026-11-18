@@ -66,6 +66,7 @@ class StaticFetcher:
     def __init__(self, headers: Dict[str, str] = None, timeout: int = 30):
         self.headers = headers
         self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.cookies: Optional[Dict[str, str]] = None  # session cookies from --login
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def fetch(self, url: str, headers: Dict[str, str] = None) -> Dict[str, Any]:
@@ -100,7 +101,7 @@ class StaticFetcher:
 
     async def _get(self, url: str, headers: Optional[Dict[str, str]]) -> Dict[str, Any]:
         if self._session is None or self._session.closed:
-            self._session = create_session(self.headers, self.timeout)
+            self._session = create_session(self.headers, self.timeout, self.cookies)
 
         async with self._session.get(url, headers=headers) as response:
             response_headers = {key.lower(): value for key, value in response.headers.items()}
@@ -200,6 +201,12 @@ class SmartFetcher:
             result["fallback_attempted"] = True
             result["fallback_failed"] = True
             return result
+
+    async def login(self, url: str, username: str, password: str):
+        """Log in once; the session cookies then ride along on every static and browser request."""
+        cookies = await self.browser_fetcher.login(url, username, password)
+        self.static_fetcher.cookies = {c["name"]: c["value"] for c in cookies}
+        await self.static_fetcher.close()  # drop any session so the next one carries the cookies
 
     async def _render(self, url: str) -> Dict[str, Any]:
         try:

@@ -141,7 +141,7 @@ class ProductionCrawler:
         self.config = config
         self.state_dir = Path(config.storage.state_dir)
         # One checkpoint per set of start URLs, so --resume never continues a different crawl.
-        self.state = CrawlState(str(crawl_file(config.start_urls, self.state_dir / "crawls")))
+        self.state = self._checkpoint_for(config.start_urls)
         self.results: List[Dict[str, Any]] = []
         self.exports: Dict[str, Optional[str]] = {}
         self.changes: Optional[ChangeReport] = None
@@ -174,7 +174,7 @@ class ProductionCrawler:
         self.parser = UniversalParser(config.required_fields)
         self.storage = StorageManager(config)
         self.compliance = ComplianceManager(config)
-        self.raw_storage = RawHtmlStorage(config.storage.blob_storage_path)
+        self.raw_storage = RawHtmlStorage(config.storage.blob_storage_path or str(self.state_dir / "raw_html"))
         self.etag_cache = ETagCache(str(self.state_dir / "etag_cache.db")) if config.incremental else None
         self.logger = StructuredLogger(
             config.name,
@@ -183,6 +183,11 @@ class ProductionCrawler:
             level=config.logging.level,
             console=config.logging.console,
         )
+
+    def _checkpoint_for(self, start_urls: List[str]) -> CrawlState:
+        # Normalized, so --resume finds the checkpoint whether or not the URL was typed with a "/".
+        urls = [normalize_url(url) for url in start_urls]
+        return CrawlState(str(crawl_file(urls, self.state_dir / "crawls")))
 
     @property
     def _automatic(self) -> bool:
@@ -197,7 +202,7 @@ class ProductionCrawler:
         if start_urls is None:
             start_urls = self.config.start_urls
         elif sorted(start_urls) != sorted(self.config.start_urls):
-            self.state = CrawlState(str(crawl_file(start_urls, self.state_dir / "crawls")))
+            self.state = self._checkpoint_for(start_urls)
         if selectors is not None:
             self._selectors = dict(selectors)
 
@@ -223,6 +228,9 @@ class ProductionCrawler:
         self.state.save()  # from here on, a crash at any moment can be resumed
 
         try:
+            if self.config.login:
+                await self.fetcher.login(**self.config.login)  # credentials stay out of the log
+                self.logger.info("logged_in", url=self.config.login.get("url"))
             if self.config.use_sitemap:
                 await self._seed_from_sitemaps(start_urls)
             await self._run_frontier()

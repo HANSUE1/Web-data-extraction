@@ -3,6 +3,7 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
 from aiohttp import web
 from parsel import Selector
 
@@ -62,6 +63,26 @@ def test_each_crawl_keeps_its_own_checkpoint(site, make_config):
 
     # Before, both used data/crawl_state.json, so --resume of /a continued the crawl of /b.
     assert len(list(Path("outputs/state/crawls").glob("*.json"))) == 2
+
+
+def test_resume_finds_the_checkpoint_however_the_url_was_typed(site, make_config):
+    site.add("/", "home")
+
+    run(config_for(make_config, site.url))  # no trailing slash
+    crawler = ProductionCrawler(config_for(make_config, site.url + "/"))
+
+    assert crawler.state.load()  # same checkpoint, so --resume continues it
+
+
+def test_raw_html_follows_the_state_folder(site, make_config):
+    site.add("/", "home")
+    config = make_config()
+    config.storage.state_dir = "elsewhere"
+
+    run(config)
+
+    assert any(Path("elsewhere/raw_html").glob("*.html"))
+    assert not Path("outputs/state").exists()
 
 
 def test_everything_the_crawler_writes_goes_under_outputs(site, make_config):
@@ -248,3 +269,32 @@ def test_cli_passes_ordinary_patterns_quietly(capsys):
     cli.build_config(parser.parse_args(["--urls", "https://a.test/", "--include", "/shop/"]), parser)
 
     assert capsys.readouterr().err == ""
+
+
+# --- Login (--login) ---------------------------------------------------------
+
+def test_static_fetcher_sends_login_cookies(site):
+    site.add("/gated", "gated")
+    fetcher = StaticFetcher()
+    fetcher.cookies = {"wss-logged-in": "1"}
+
+    async def go():
+        try:
+            return await fetcher.fetch(site.url + "/gated")
+        finally:
+            await fetcher.close()
+
+    asyncio.run(go())
+    assert "wss-logged-in=1" in site.headers_seen["/gated"].get("Cookie", "")
+
+
+def test_cli_login_builds_config_and_needs_the_browser():
+    parser = cli.build_parser()
+
+    config = cli.build_config(parser.parse_args(
+        ["--urls", "https://a.test/", "--login", "https://a.test/login", "user", "pass"]), parser)
+    assert config.login == {"url": "https://a.test/login", "username": "user", "password": "pass"}
+
+    with pytest.raises(SystemExit):  # --login drives the browser, so --no-browser is a contradiction
+        cli.build_config(parser.parse_args(
+            ["--urls", "https://a.test/", "--login", "https://a.test/login", "u", "p", "--no-browser"]), parser)

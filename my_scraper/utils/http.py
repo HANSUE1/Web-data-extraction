@@ -25,9 +25,12 @@ def ssl_context() -> ssl.SSLContext:
 
 
 def create_session(headers: Optional[Dict[str, str]] = None,
-                   timeout: Optional[aiohttp.ClientTimeout] = None) -> aiohttp.ClientSession:
+                   timeout: Optional[aiohttp.ClientTimeout] = None,
+                   cookies: Optional[Dict[str, str]] = None) -> aiohttp.ClientSession:
     connector = aiohttp.TCPConnector(ssl=ssl_context())
     options = {"timeout": timeout} if timeout else {}
+    if cookies:
+        options["cookies"] = cookies  # session cookies from --login, sent with every request
     # trust_env honours HTTP_PROXY and friends, which company networks often require.
     # Some sites send a Content-Security-Policy header far over aiohttp's 8 KB default; browsers accept it.
     return aiohttp.ClientSession(connector=connector, headers={**DEFAULT_HEADERS, **(headers or {})},

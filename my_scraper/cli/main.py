@@ -75,6 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Skip pages that have not changed since the last run")
     parser.add_argument("--track", action="store_true",
                         help="Compare with the last run of the same crawl: list new, changed and removed items")
+    parser.add_argument("--login", nargs=3, metavar=("LOGIN_URL", "USERNAME", "PASSWORD"),
+                        help="Log in at LOGIN_URL before crawling, for a site you may access. Needs the "
+                             "browser. Credentials show in your shell history and process list")
     parser.add_argument("--resume", action="store_true", help="Continue the last interrupted crawl (pass the same --urls)")
     parser.add_argument("--quiet", action="store_true", help="Keep logs to the log file and show only the summary")
     parser.add_argument("--explain", action="store_true",
@@ -149,6 +152,11 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
         config.fetcher = FetcherType.BROWSER
     if args.no_browser:
         config.fetcher = FetcherType.STATIC
+    if args.login:
+        if args.no_browser:
+            parser.error("--login needs the browser, so it cannot be used with --no-browser")
+        url, username, password = args.login
+        config.login = {"url": url, "username": username, "password": password}
     if args.export:
         config.export_formats = [ExportFormat(fmt) for fmt in args.export]
     if args.selector:

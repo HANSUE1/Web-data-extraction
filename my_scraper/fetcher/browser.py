@@ -111,6 +111,10 @@ class BrowserUnavailable(Exception):
     """The browser could not start, which trying again will not change."""
 
 
+class LoginFailed(Exception):
+    """The login form could not be found or submitted."""
+
+
 # Second-level labels under which countries register domains, as in bbc.co.uk or abc.net.au.
 SECOND_LEVEL = {"co", "com", "net", "org", "gov", "ac", "edu", "or", "ne", "go"}
 
@@ -167,6 +171,7 @@ class BrowserFetcher:
         self.user_agent = user_agent
         self.expand_rounds = expand_rounds
         self.viewport = viewport
+        self.cookies: List[Dict[str, Any]] = []  # session cookies from --login, reused on every context
         self._playwright = None
         self._browser = None
         self._start_lock: Optional[asyncio.Lock] = None
@@ -198,6 +203,33 @@ class BrowserFetcher:
             await self._playwright.stop()
         self._browser = self._playwright = self._start_lock = self._slots = None
 
+    async def login(self, url: str, username: str, password: str) -> List[Dict[str, Any]]:
+        """Submit a login form and keep its session cookies for later fetches.
+
+        Fills the first username/email field and the password field in the form that holds the
+        password, then clicks that form's submit control. Raises LoginFailed if no form is found.
+        """
+        browser = await self._shared_browser()
+        async with self._slots:
+            context = await browser.new_context(user_agent=self.user_agent, viewport=self.viewport)
+            try:
+                page = await context.new_page()
+                watch = NetworkWatch(page)
+                await self._open(page, url)
+                form = page.locator("form:has(input[type=password])").first
+                if not await form.count():
+                    raise LoginFailed(f"No login form (input[type=password]) found at {url}")
+                await form.locator(
+                    "input[name=username], input[name=email], input[type=email], input[type=text]"
+                ).first.fill(username)
+                await form.locator("input[type=password]").first.fill(password)
+                await form.locator("button[type=submit], input[type=submit], button").first.click()
+                await watch.quiet(PAGE_LOAD_QUIET)
+                self.cookies = await context.cookies()
+                return self.cookies
+            finally:
+                await context.close()
+
     async def fetch(self, url: str) -> Dict[str, Any]:
         """Render a page and read everything it shows."""
         start_time = time.time()
@@ -205,6 +237,8 @@ class BrowserFetcher:
 
         async with self._slots:
             context = await browser.new_context(user_agent=self.user_agent, viewport=self.viewport)
+            if self.cookies:
+                await context.add_cookies(self.cookies)
             try:
                 await context.route("**/*", self._skip_heavy_resources)
                 page = await context.new_page()

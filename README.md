@@ -129,6 +129,7 @@ Both keep their logs and audit trail in `~/.web-data-extraction` (set `SCRAPER_H
 | `--use-browser`, `--no-browser` | Force the browser for every page, or never use it. By default it is used when a page needs it. |
 | `--quiet` | Keep logs to the log file and print only the summary. |
 | `--resume` | Continue the last interrupted crawl of the same `--urls`. Each set of start URLs has its own checkpoint. |
+| `--login LOGIN_URL USERNAME PASSWORD` | Log in before crawling, for a site you may access. See "Logging in". |
 | `--config` | JSON file with any `CrawlConfig` setting. Command line options override it. |
 
 Example config file:
@@ -262,10 +263,21 @@ Web-data-extraction/
 
 For a quick one-page job, the CLI does what a separate script would: `--max-depth 0 --item ".row" --selector "name=a::text"`.
 
+## Logging in
+
+`--login LOGIN_URL USERNAME PASSWORD` logs in once before the crawl, for sites you own or may access. It opens the login page in the browser, fills the first username/email field and the password field of the form that holds the password, submits it, and reuses the session cookies for the whole crawl, on both plain HTTP and browser requests.
+
+```bash
+python -m my_scraper.cli.main --urls https://example.com/members \
+    --login https://example.com/login myname 'my-password'
+```
+
+It needs the browser (`playwright`), so it can't be combined with `--no-browser`. The credentials are never written to logs or exports, but they do appear in your shell history and in the process list, so prefer a throwaway or test account. Off by default: without `--login`, login and paywall pages are still reported as `login_required` and never entered.
+
 ## What It Cannot Do
 
 - **Sites that refuse.** Some sites block automated visitors outright, and many others disallow them in robots.txt. The scraper respects both and says which happened. It does not disguise itself, solve CAPTCHAs or bypass anti-bot systems, by design.
-- **Pages behind a login or paywall**, also by design.
+- **Pages behind a login or paywall**, unless you pass credentials for a site you may access with `--login` (see "Logging in"). Paywalls and anti-bot walls are never bypassed.
 - **Text that isn't text.** Content drawn on a canvas or baked into images has nothing to read, and scanned PDFs have no text layer. There is no OCR.
 - **Closed shadow DOM and cross-site iframes**, which browsers keep out of reach.
 - **Knowing what you wanted.** Automatic extraction finds what looks like the main content. On a page with several plausible answers it may pick a different one than you meant, which is what `--example` is for.

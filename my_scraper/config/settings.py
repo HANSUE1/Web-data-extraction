@@ -84,7 +84,7 @@ class StorageConfig:
     """Storage configuration."""
     save_raw_html: bool = True
     state_dir: str = STATE_DIR  # checkpoints, caches, snapshots and the takedown blocklist
-    blob_storage_path: str = f"{STATE_DIR}/raw_html"
+    blob_storage_path: Optional[str] = None  # raw HTML; default: state_dir/raw_html
 
 
 @dataclass
@@ -168,6 +168,10 @@ class CrawlConfig:
 
     incremental: bool = False  # on repeat runs, skip pages that have not changed
     track_changes: bool = False  # report what is new, changed or gone since the last run
+
+    # Log in before crawling, for sites you may access. {"url", "username", "password"}. Off by default.
+    # Needs the browser. The session cookies are reused for the crawl and never written to logs or exports.
+    login: Optional[Dict[str, str]] = None
 
     # Sub-configs
     robots: RobotsConfig = field(default_factory=RobotsConfig)
