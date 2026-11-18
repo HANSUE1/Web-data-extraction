@@ -18,10 +18,24 @@ ALL_TEXT = " ::text"  # with the space: all text inside the element, including i
 BINARY_TYPES = ("image/", "video/", "audio/", "font/", "application/octet-stream", "application/zip")
 XML_OPENINGS = ("<?xml", "<rss", "<feed", "<rdf:rdf", "<urlset", "<sitemapindex")
 HEAD_SAMPLE = 600
+# Parsing time grows with the number of tags, not bytes: a 1.6 MB Wikipedia list (34k tags)
+# takes ~15 s, 73k tags of filler ~12-25 s. Past this a parse can outlast the crawler's
+# 60 s limit, and a thread that outlasts it can't be stopped, so the page is cut instead.
+MAX_HTML_TAGS = 75_000
 
 # Guards some APIs put before their JSON, and callback(...) wrappers.
 JSON_GUARD = re.compile(r"""^\s*(?:\)\]\}'?,?|while\(1\);|for\(;;\);)\s*""")
 JSONP_WRAPPER = re.compile(r"^\s*[\w$.]+\(\s*(.*?)\s*\)\s*;?\s*$", re.DOTALL)
+
+
+def cut_to_tags(html: str, limit: int = MAX_HTML_TAGS) -> Optional[str]:
+    """The HTML up to its limit-th tag, or None when it has no more than that."""
+    if html.count("<") <= limit:
+        return None
+    at = -1
+    for _ in range(limit + 1):  # stop at the tag after the limit; there is one, as count > limit
+        at = html.find("<", at + 1)
+    return html[:at]
 
 
 def load_json(text: str) -> Any:
@@ -173,7 +187,14 @@ class UniversalParser:
         kind = self.detector.detect(content, fetch_result.get("headers"), url, body)
 
         if kind == "html":
-            return self._parse_html(fetch_result, selectors, item_selector, include_markdown)
+            cut = [cut_to_tags(html) for html in [content, *(fetch_result.get("snapshots") or [])]]
+            if not any(cut):
+                return self._parse_html(fetch_result, selectors, item_selector, include_markdown)
+            trimmed = {**fetch_result, "content": cut[0] or content,
+                       "snapshots": [short or full for short, full in zip(cut[1:], fetch_result.get("snapshots") or [])]}
+            page = self._parse_html(trimmed, selectors, item_selector, include_markdown)
+            page.errors.append(f"Page has over {MAX_HTML_TAGS:,} tags; only the first {MAX_HTML_TAGS:,} were read")
+            return page
         if kind == "binary":
             return ParsedPage(items=[], url=url, errors=["Binary file with no readable content"])
         return self._parse_file(kind, content, body, url)

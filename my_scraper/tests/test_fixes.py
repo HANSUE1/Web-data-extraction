@@ -308,3 +308,19 @@ def test_cli_login_builds_config_and_needs_the_browser():
     with pytest.raises(SystemExit):  # --login drives the browser, so --no-browser is a contradiction
         cli.build_config(parser.parse_args(
             ["--urls", "https://a.test/", "--login", "https://a.test/login", "u", "p", "--no-browser"]), parser)
+
+
+def test_a_page_with_endless_tags_is_cut_not_parsed_for_minutes():
+    """web-scraping.dev/huge-page streams <p> tags until the 30 MB cap; parsing all of them took
+    minutes, outlived the 60 s limit, and the stuck thread starved every later crawl in the app."""
+    import time
+    from my_scraper.parser.universal_parser import MAX_HTML_TAGS, UniversalParser, cut_to_tags
+
+    html = "<html><body><h1>Huge</h1>" + "<p>filler</p>" * 150_000 + "</body></html>"
+    started = time.time()
+    page = UniversalParser().parse_page({"content": html, "url": "https://a.test/huge", "headers": {"content-type": "text/html"}})
+    assert time.time() - started < 45
+    assert any("tags" in error for error in page.errors)
+    assert cut_to_tags(html).count("<") == MAX_HTML_TAGS
+    assert cut_to_tags("<p>small</p>") is None
+
