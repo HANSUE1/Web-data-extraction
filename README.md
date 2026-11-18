@@ -81,7 +81,7 @@ A local app for everything above, with no login:
 
 - **Overview**: totals, a 30-day chart of items caught, the sites with the most items, and the latest runs.
 - **Extract**: start a crawl by auto-detect, by example values, or by CSS/XPath selectors. Set pages, depth, pace, rendering, sitemaps, filters and export formats. It shows the matching CLI command. **Quick look** previews one page without saving anything.
-- **Live**: a progress ring, counters, a live map of every page touched (drag, zoom, double-click to open) and the event feed. **Stop** keeps what was already caught.
+- **Live**: a progress ring, counters, the event feed, and a map of every page touched (drag, zoom, double-click to open). The main panel is a small browser showing the page being crawled, rebuilt from the HTML already fetched, so the site gets no extra requests. A spider lowers itself onto each page, wraps the items it takes, taps the links it will follow next, and backs off pages it may not enter. **Stop** keeps what was already caught.
 - **Library**: every folder in `outputs/results`, searchable and sortable. Open a run to view JSONL, CSV, JSON, SQLite or text files as a table, as cards or as JSON. You can search, sort by any column, hide columns and open one record in full. You can also download, open the folder or delete.
 
 Keys: `Ctrl+K` command palette, `1`–`4` switch pages, `N` new extraction, `T` light/dark, `/` search, `j`/`k` and `Enter` in tables.

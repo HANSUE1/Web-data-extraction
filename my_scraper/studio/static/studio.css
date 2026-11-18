@@ -360,7 +360,7 @@ details.more[open] > div { animation: rise .45s var(--ease); }
 /* ---------- Live ---------- */
 .live { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 18px; align-items: start; }
 .live-left { display: flex; flex-direction: column; gap: 18px; position: sticky; top: 84px; }
-.live-left .net { height: 400px; }
+.live-left .net { height: 430px; }
 .walk { position: relative; padding: 0; overflow: hidden; display: flex; flex-direction: column; height: 600px; }
 .browser { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
 .browser .dots { display: flex; gap: 6px; }
@@ -440,6 +440,8 @@ details.more[open] > div { animation: rise .45s var(--ease); }
 .net .legend { position: absolute; left: 16px; bottom: 14px; display: flex; gap: 14px; font: 11.5px var(--mono); color: var(--ink-3); pointer-events: none; }
 .net .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .net .nettitle { position: absolute; left: 18px; top: 16px; pointer-events: none; }
+.radar-stats { margin-top: 4px; font: 11px var(--mono); color: var(--ink-2); }
+.live-left .net { background: radial-gradient(closest-side, color-mix(in srgb, var(--lime) 5%, transparent), transparent), var(--panel); }
 .net .tip { transform: translate(12px, -50%); }
 .feed { font: 12.5px/1.55 var(--mono); max-height: 360px; overflow: auto; margin-top: 12px; display: flex; flex-direction: column; }
 .feed .ev { display: grid; grid-template-columns: 72px 150px 1fr; gap: 12px; padding: 5px 8px; border-radius: 7px; animation: slidein .35s var(--ease); }
