@@ -18,6 +18,7 @@ from my_scraper.studio import sketch
 from my_scraper.utils.urls import normalize_url
 
 MAX_EVENTS = 4000
+MAX_SKETCHES = 120  # page copies for the live view; ~10 KB each, so they get their own, smaller cap
 MAX_JOBS_KEPT = 50
 
 # Request fields -> CLI options. Robots exemptions and logins are not here on purpose:
@@ -81,6 +82,14 @@ def config_from_request(request: Dict[str, Any]) -> CrawlConfig:
     export = _strings(request.get("export"), "export") or ["jsonl", "csv"]
     argv += ["--export", *export]
 
+    # A value starting with "-" would be read as another option, such as --ignore-robots-for,
+    # which is for the command line only. Options are fixed above; values are what the request gave.
+    options = {*NUMBERS.values(), *FLAGS.values(), *LISTS.values(), *PAIRS.values(),
+               "--urls", "--item", "--export", *sum(MODES.values(), [])}
+    for value in argv:
+        if value.startswith("-") and value not in options:
+            raise InvalidJob(f"Values can't start with '-': {value}")
+
     parser = build_parser()
 
     def refuse(message: str):
@@ -130,12 +139,13 @@ class Job:
         self.crawler: Optional[ProductionCrawler] = None
         self.task: Optional[asyncio.Task] = None
         self.events: Deque[Tuple[int, Dict[str, Any]]] = deque(maxlen=MAX_EVENTS)
+        self.sketches: Deque[Tuple[int, Dict[str, Any]]] = deque(maxlen=MAX_SKETCHES)
         self._seq = 0
         self.summary: Dict[str, Any] = {}
 
     def add_event(self, entry: Dict[str, Any]):
         self._seq += 1
-        self.events.append((self._seq, entry))
+        (self.sketches if entry.get("message") == "page_sketch" else self.events).append((self._seq, entry))
 
     def snapshot(self, since: Optional[int] = None) -> Dict[str, Any]:
         crawler = self.crawler
@@ -151,7 +161,8 @@ class Job:
             "max_pages": self.config.max_pages, "summary": self.summary, "last_event": self._seq,
         }
         if since is not None:
-            data["events"] = [{"seq": seq, **entry} for seq, entry in self.events if seq > since]
+            fresh = [(seq, entry) for store in (self.events, self.sketches) for seq, entry in store if seq > since]
+            data["events"] = [{"seq": seq, **entry} for seq, entry in sorted(fresh, key=lambda pair: pair[0])]
         return data
 
 

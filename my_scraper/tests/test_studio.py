@@ -77,7 +77,10 @@ def test_changes_need_the_studio_header_and_a_local_host(tmp_path):
 def test_job_requests_are_validated_like_the_cli():
     for bad in ({}, {"urls": ["ftp://x"]}, {"urls": ["https://a.test"], "max_pages": "9"},
                 {"urls": ["https://a.test"], "mode": "turbo"}, {"urls": ["https://a.test"], "login": ["u", "p"]},
-                {"urls": ["https://a.test"], "ignore_robots_for": ["a.test"]}):
+                {"urls": ["https://a.test"], "ignore_robots_for": ["a.test"]},
+                {"urls": ["https://a.test", "--ignore-robots-for=a.test"]},
+                {"urls": ["https://a.test"], "include": ["--ignore-robots-for=a.test"]},
+                {"urls": ["https://a.test"], "selectors": {"-x": "h1"}}):
         try:
             config_from_request(bad)
         except InvalidJob:
@@ -146,3 +149,28 @@ def test_sketch_of_data_lists_the_items():
                          [{"name": "Garden chair"}, {"name": "Desk lamp"}], lambda href: False)
     assert [b["parts"][0][0] for b in drawn["blocks"]] == ["Garden chair", "Desk lamp"]
 
+
+
+def test_listing_the_library_reads_each_file_once(tmp_path, monkeypatch):
+    """Listing used to re-parse every result file on each request, stalling a running crawl."""
+    from my_scraper.studio import results
+    write_run(tmp_path)
+    library = results.Library(str(tmp_path / "results"))
+    reads = []
+    real = results._read_rows
+    monkeypatch.setattr(results, "_read_rows", lambda path: reads.append(path) or real(path))
+    library.runs()
+    library.runs()
+    assert len(reads) == 2  # the run's .jsonl and .csv, once each
+
+
+def test_page_copies_are_capped_but_events_keep_their_order():
+    from my_scraper.studio.jobs import MAX_SKETCHES, Job
+    job = Job({}, config_from_request({"urls": ["https://a.test/"]}))
+    for n in range(MAX_SKETCHES + 30):
+        job.add_event({"message": "http_request", "url": f"https://a.test/{n}"})
+        job.add_event({"message": "page_sketch", "url": f"https://a.test/{n}", "sketch": {}})
+    events = job.snapshot(since=0)["events"]
+    assert sum(e["message"] == "page_sketch" for e in events) == MAX_SKETCHES
+    assert sum(e["message"] == "http_request" for e in events) == MAX_SKETCHES + 30
+    assert [e["seq"] for e in events] == sorted(e["seq"] for e in events)

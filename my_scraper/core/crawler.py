@@ -15,7 +15,7 @@ from parsel import Selector
 from my_scraper.compliance.manager import ComplianceManager
 from my_scraper.core.frontier import QueuedUrl, SiteFrontier
 from my_scraper.core.links import base_url_of, forbids_following, next_page_links, page_links
-from my_scraper.core.page_checks import BLOCKED, CONSENT, LOGIN, classify_page
+from my_scraper.core.page_checks import BLOCKED, CONSENT, LOGIN, classify_page, is_html
 from my_scraper.fetcher.discovery import (
     SITEMAP_LOCATIONS,
     api_next_links,
@@ -597,18 +597,13 @@ class ProductionCrawler:
                 self.etag_cache.update(url, first_view["headers"], first_view["content"])
 
         self._content_hashes.add(digest)
-        if self._is_html(fetch_result):
+        if is_html(fetch_result):
             # A next-page link on a page that added nothing leads nowhere worth going.
             self.extract_links(fetch_result["content"], final_url, depth, follow_pagination=new_items > 0)
         if page is not None:
             self._follow_discoveries(url, final_url, depth, fetch_result, page)
             if self.on_page:  # last, so the links it queued are known
                 self.on_page(final_url, fetch_result, page)
-
-    @staticmethod
-    def _is_html(fetch_result: Dict[str, Any]) -> bool:
-        content_type = (fetch_result.get("headers") or {}).get("content-type", "").lower()
-        return not content_type or "html" in content_type
 
     def _landed_well(self, url: str, final_url: str, fetch_result: Dict[str, Any]) -> bool:
         """Check the response really is the page asked for, not a block page or a redirect away."""
@@ -684,7 +679,7 @@ class ProductionCrawler:
         site = self._site_of(url)
         if self._render_attempts.get(site, 0) >= self._render_limit:
             return False
-        if not self._is_html(fetch_result):
+        if not is_html(fetch_result):
             return False
 
         items = [item for item in page.items if any(value not in (None, "", []) for value in item.values())]

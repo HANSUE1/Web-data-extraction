@@ -45,7 +45,7 @@ NOT_FOUND_PHRASES = re.compile(
 )
 
 
-def _is_html(fetch_result: Dict[str, Any]) -> bool:
+def is_html(fetch_result: Dict[str, Any]) -> bool:
     content_type = (fetch_result.get("headers") or {}).get("content-type", "").lower()
     return not content_type or "html" in content_type
 
@@ -59,7 +59,7 @@ def classify_page(fetch_result: Dict[str, Any]) -> Optional[str]:
         return LOGIN  # sent somewhere we did not ask to go
 
     content = fetch_result.get("content") or ""
-    if not content.strip() or not _is_html(fetch_result):
+    if not content.strip() or not is_html(fetch_result):
         return None
 
     sel = Selector(text=content, type="html")

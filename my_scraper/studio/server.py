@@ -7,6 +7,7 @@ open in the same browser from using it: the Host header must name this computer 
 rebinding), and every change needs an X-Studio header, which a cross-site page can't send.
 """
 import argparse
+import asyncio
 import os
 import subprocess
 import sys
@@ -81,17 +82,18 @@ def create_app(results_dir: str = RESULTS_DIR, service: Optional[ScrapeService] 
 
     # --- Results ----------------------------------------------------------------
 
+    # Reading result files takes real time; off the event loop, so a running crawl keeps its pace.
     async def runs(_request):
-        return _json({"root": str(library.root), "runs": library.runs()})
+        return _json({"root": str(library.root), "runs": await asyncio.to_thread(library.runs)})
 
     async def stats(_request):
-        return _json(library.stats())
+        return _json(await asyncio.to_thread(library.stats))
 
     async def view_file(request):
-        return _json(library.view(request.query.get("path", ""), offset=_int(request, "offset", 0),
-                                  limit=_int(request, "limit", 100), query=request.query.get("q", ""),
-                                  sort=request.query.get("sort") or None,
-                                  descending=request.query.get("desc") == "1"))
+        return _json(await asyncio.to_thread(
+            library.view, request.query.get("path", ""), offset=_int(request, "offset", 0),
+            limit=_int(request, "limit", 100), query=request.query.get("q", ""),
+            sort=request.query.get("sort") or None, descending=request.query.get("desc") == "1"))
 
     async def download(request):
         path = library.resolve(request.query.get("path", ""))

@@ -29,6 +29,8 @@ class Library:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self._rows: Dict[Path, Tuple[Tuple[float, int], List[Dict[str, Any]]]] = {}
+        # Row counts outlive the rows cache: listing the library must not re-read every file.
+        self._counts: Dict[Path, Tuple[Tuple[float, int], Optional[int]]] = {}
 
     # --- Paths ----------------------------------------------------------------
 
@@ -81,10 +83,16 @@ class Library:
         fmt = path.suffix.lstrip(".").lower()
         rows = None
         if fmt in TABLE_FORMATS:
-            try:
-                rows = len(self.rows(path))
-            except Exception:  # a half-written or foreign file still shows in the list
-                rows = None
+            key = (stat.st_mtime, stat.st_size)
+            cached = self._counts.get(path)
+            if cached and cached[0] == key:
+                rows = cached[1]
+            else:
+                try:
+                    rows = len(_read_rows(path))
+                except Exception:  # a half-written or foreign file still shows in the list
+                    rows = None
+                self._counts[path] = (key, rows)
         return {"path": self._relative(path), "name": path.name, "format": fmt,
                 "size": stat.st_size, "modified": stat.st_mtime, "rows": rows}
 
@@ -118,8 +126,11 @@ class Library:
         }
 
     def delete_run(self, relative: str):
-        shutil.rmtree(self.resolve(relative, kind="dir"))
-        self._rows.clear()
+        folder = self.resolve(relative, kind="dir")
+        shutil.rmtree(folder)
+        for cache in (self._rows, self._counts):
+            for path in [path for path in cache if folder in path.parents]:
+                del cache[path]
 
     # --- File contents ----------------------------------------------------------
 
@@ -141,7 +152,8 @@ class Library:
         path = self.resolve(relative)
         fmt = path.suffix.lstrip(".").lower()
         if fmt not in TABLE_FORMATS:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read(MAX_TEXT_CHARS + 1)  # a big log is never read whole
             return {"kind": "text", "format": fmt, "text": text[:MAX_TEXT_CHARS],
                     "truncated": len(text) > MAX_TEXT_CHARS}
 
