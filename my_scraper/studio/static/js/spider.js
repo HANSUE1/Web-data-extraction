@@ -142,7 +142,7 @@ export class PageWalk {
     const abdRy = (a) => 9.4 * (1 - .1 * Math.cos(a));
     this.abd = Array.from({ length: 40 }, (_, k) => { const a = k / 40 * 6.283; return [12.6 * Math.cos(a), abdRy(a) * Math.sin(a)]; });
     const abdTone = (x, y) => {  // wolf-spider back: dark flanks, a pale band down the middle holding a dark lance-shaped heart mark
-      const ay = Math.abs(y), band = 3.6 + (x < 0 ? x * .18 : -x * .12);
+      const ay = Math.abs(y), band = 2.8 + (x < 0 ? x * .18 : -x * .12);
       if (x > -3 && x < 10.5 && ay < 1.5 * (1 - Math.abs(x - 3.5) / 7.5) + .3) return "dark";
       if (ay < band) return x < -2 && Math.abs((x * 10) % 24) < 5 ? "dark" : "pale";
       if (ay < band + 1.1) return "cream";
@@ -547,24 +547,24 @@ export class PageWalk {
     g.addColorStop(0, P.base); g.addColorStop(.55, P.dark); g.addColorStop(1, P.outline);
     ctx.fillStyle = g; path(this.abd); ctx.fill(); ctx.shadowBlur = 0;
     ctx.save(); path(this.abd); ctx.clip();
-    ctx.globalAlpha = .55; ctx.fillStyle = P.pale; ctx.beginPath(); ctx.ellipse(-.5, 0, 12, 3.8, 0, 0, 6.283); ctx.fill();  // the pale dorsal band under the fur
+    ctx.globalAlpha = .4; ctx.fillStyle = P.pale; ctx.beginPath(); ctx.ellipse(-.5, 0, 12, 2.9, 0, 0, 6.283); ctx.fill();  // the pale dorsal band under the fur
     ctx.globalAlpha = .85; ctx.fillStyle = P.deep;  // cardiac mark
     ctx.beginPath(); ctx.moveTo(10.5, 0); ctx.quadraticCurveTo(3.5, -2.3, -3, 0); ctx.quadraticCurveTo(3.5, 2.3, 10.5, 0); ctx.fill();
     ctx.globalAlpha = 1;
-    fur(this.abdFur, { deep: [P.deep, .7], dark: [P.outline, .6], pale: [P.pale, .55], cream: [P.cream, .6] }, .32);
+    fur(this.abdFur, { deep: [P.deep, .75], dark: [P.outline, .65], pale: [P.pale, .45], cream: [P.cream, .4] }, .32);
     for (const d of this.speck) { ctx.globalAlpha = .4; ctx.fillStyle = P.cream; ctx.beginPath(); ctx.arc(d.x, d.y, d.r * .6, 0, 6.283); ctx.fill(); }
     const chevrons = (color, alpha) => {  // the folium's chevrons toward the spinnerets
       ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath();
       for (let k = 0; k < 4; k++) { const x = -3.5 - k * 2.3, w = 3.6 - k * .6; ctx.moveTo(x - 1.1, -w); ctx.lineTo(x + 1.1, 0); ctx.lineTo(x - 1.1, w); }
       ctx.stroke();
     };
-    chevrons(P.outline, .55);
+    chevrons(P.outline, .35);
     if (sp.glow > 0) chevrons(t.lime, sp.glow);
     const sheen = ctx.createRadialGradient(L.x * 6, L.y * 5, 0, L.x * 6, L.y * 5, 7);  // a soft, hairy sheen, not a gloss
     sheen.addColorStop(0, "rgba(255,240,215,.16)"); sheen.addColorStop(1, "rgba(255,240,215,0)");
     ctx.globalAlpha = 1; ctx.fillStyle = sheen; ctx.fillRect(-13, -10, 26, 20);
     ctx.restore();
-    ctx.globalAlpha = .5; ctx.strokeStyle = P.light; ctx.lineWidth = .25; ctx.beginPath();  // the halo of guard hairs that breaks up the outline
+    ctx.globalAlpha = .3; ctx.strokeStyle = P.light; ctx.lineWidth = .22; ctx.beginPath();  // the halo of guard hairs that breaks up the outline
     for (let k = 0; k < this.abd.length; k++) { const [x, y] = this.abd[k], l = 1 + (k * 7 % 5) * .25; ctx.moveTo(x * .97, y * .97); ctx.lineTo(x * (1 + l / 13) - l * .4, y * (1 + l / 10)); }
     ctx.stroke(); ctx.globalAlpha = 1;
     ctx.fillStyle = P.dark;  // spinnerets
