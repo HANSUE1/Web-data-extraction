@@ -149,12 +149,12 @@ export class SilkMap {
   origin() { return { x: this.w / 2 + this.view.x, y: this.h / 2 + 18 + this.view.y, k: this.fit * this.view.k }; }
 
   frame(now) {
-    const dt = Math.min(.05, (now - this.last) / 1000); this.last = now;
+    const dt = Math.max(0, Math.min(.05, (now - this.last) / 1000)); this.last = now;  // the first frame can stamp earlier than the constructor
     const { ctx } = this, t = tokens(), hub = this.hub, live = this.step(dt * 60);
     this.heat = Math.max(.04, this.heat - dt * .35);
     // zoom to fit the web, gently, with room for the title and legend
     let ext = 60;
-    for (const n of live) ext = Math.max(ext, Math.abs(n.x) / (this.w / 2 - 50) * (this.h / 2 - 60), Math.abs(n.y));
+    for (const n of live) ext = Math.max(ext, Math.abs(n.x) / Math.max(40, this.w / 2 - 110) * (this.h / 2 - 60), Math.abs(n.y));  // 110px each side keeps section names inside the card
     const want = Math.max(.35, Math.min(1.5, (this.h / 2 - 60) / ext));
     this.fit += (want - this.fit) * Math.min(1, dt * 2);
     const o = this.origin();
@@ -268,7 +268,8 @@ export class SilkMap {
     c.addEventListener("pointerup", () => { pan = null; });
     c.addEventListener("pointerleave", () => { this.hover = null; this.tip.classList.remove("on"); });
     c.addEventListener("dblclick", (e) => { const [x, y] = pos(e); const hit = this.at(x, y); if (hit) window.open(hit.url, "_blank", "noopener"); else this.view = { x: 0, y: 0, k: 1 }; });
-    c.addEventListener("wheel", (e) => {  // zoom about the cursor
+    c.addEventListener("wheel", (e) => {  // Ctrl + wheel zooms about the cursor; a plain wheel scrolls the page as usual
+      if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault(); const [x, y] = pos(e), k = Math.max(.5, Math.min(4, this.view.k * (e.deltaY < 0 ? 1.12 : .89)));
       const ox = this.w / 2, oy = this.h / 2 + 18;
       this.view.x = x - ox - (x - ox - this.view.x) * (k / this.view.k); this.view.y = y - oy - (y - oy - this.view.y) * (k / this.view.k); this.view.k = k;

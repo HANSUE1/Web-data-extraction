@@ -394,7 +394,7 @@ export class PageWalk {
 
   // --- drawing
   frame(now) {
-    const dt = Math.min(.05, (now - this.last) / 1000); this.last = now;
+    const dt = Math.max(0, Math.min(.05, (now - this.last) / 1000)); this.last = now;  // the first frame can stamp earlier than the constructor
     this.update(dt, now);
     const { ctx } = this, t = tokens(), sp = this.s;
     ctx.clearRect(0, 0, this.vw, this.vh);

@@ -358,9 +358,11 @@ details.more[open] > div { animation: rise .45s var(--ease); }
 .kv dt { color: var(--ink-3); } .kv dd { margin: 0; word-break: break-word; }
 
 /* ---------- Live ---------- */
-.live { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 18px; align-items: start; }
-.live-left { display: flex; flex-direction: column; gap: 18px; position: sticky; top: 84px; }
-.live-left .net { height: 430px; }
+.live { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; align-items: start; }
+.live-left { display: flex; flex-direction: column; gap: 18px; position: sticky; top: 84px; max-height: calc(100vh - 110px); overflow-y: auto; }
+/* the page being walked and the map of the site, side by side and the same height */
+.live-stage { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; }
+.live-stage .net { height: 600px; }
 .walk { position: relative; padding: 0; overflow: hidden; display: flex; flex-direction: column; height: 600px; }
 .browser { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
 .browser .dots { display: flex; gap: 6px; }
@@ -423,7 +425,7 @@ details.more[open] > div { animation: rise .45s var(--ease); }
 .state.queued { color: var(--amber); } .state.done { color: var(--lime); }
 .state.failed { color: var(--coral); } .state.cancelled { color: var(--ink-3); }
 
-.monitor { display: grid; grid-template-rows: auto auto; gap: 18px; }
+.monitor { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; min-width: 0; }  /* one column that never grows past the window */
 .gauges { display: grid; grid-template-columns: 200px repeat(3, minmax(0, 1fr)); gap: 18px; align-items: stretch; }
 .ring { display: grid; place-items: center; position: relative; }
 .ring svg { width: 160px; height: 160px; transform: rotate(-90deg); }
@@ -441,7 +443,7 @@ details.more[open] > div { animation: rise .45s var(--ease); }
 .net .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .net .nettitle { position: absolute; left: 18px; top: 16px; pointer-events: none; }
 .radar-stats { margin-top: 4px; font: 11px var(--mono); color: var(--ink-2); }
-.live-left .net { background: radial-gradient(closest-side, color-mix(in srgb, var(--lime) 5%, transparent), transparent), var(--panel); }
+.live-stage .net { background: radial-gradient(closest-side, color-mix(in srgb, var(--lime) 5%, transparent), transparent), var(--panel); }
 .net .tip { transform: translate(12px, -50%); }
 .feed { font: 12.5px/1.55 var(--mono); max-height: 360px; overflow: auto; margin-top: 12px; display: flex; flex-direction: column; }
 .feed .ev { display: grid; grid-template-columns: 72px 150px 1fr; gap: 12px; padding: 5px 8px; border-radius: 7px; animation: slidein .35s var(--ease); }
@@ -550,7 +552,9 @@ pre.code .s { color: var(--lime); } pre.code .n { color: var(--amber); } pre.cod
 @media (max-width: 1180px) {
   .cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cols-main, .extract, .live { grid-template-columns: 1fr; }
-  .live-left { position: static; }
+  .live-left { position: static; max-height: none; }
+  .live-stage { grid-template-columns: 1fr; }
+  .live-stage .net { height: 460px; }
   .side { position: static; }
   .gauges { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .recipes { grid-template-columns: repeat(2, minmax(0, 1fr)); }

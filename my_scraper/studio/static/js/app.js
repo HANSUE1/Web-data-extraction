@@ -448,12 +448,11 @@ $("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") cl
 VIEWS.live = async (root, parts, ctx) => {
   crumbs("Seine", "Live");
   root.append(el("div", { class: "page-head" }, el("div", {}, el("h1", {}, "The net, ", el("em", { text: "live" })),
-    el("p", { text: "Watch the spider walk each page it crawls: it drops in on a thread, wraps every item it takes and taps the links it will follow next. The silk map on the left is the site as a web: each page hangs from its parent path, sections cluster together, and every fetch sends a pulse down the strands to that page." })),
+    el("p", { text: "Watch the spider walk each page it crawls: it drops in on a thread, wraps every item it takes and taps the links it will follow next. The silk map beside it is the site as a web: each page hangs from its parent path, sections cluster together, and every fetch sends a pulse down the strands to that page." })),
     el("div", { class: "actions" }, el("a", { class: "btn primary", href: "#/extract" }, icon("bolt"), "New extraction"))));
   const listBox = el("div", { class: "jobs" });
-  const mapSlot = el("div");
   const monitor = el("div", { class: "monitor" });
-  root.append(el("div", { class: "live" }, el("div", { class: "live-left" }, listBox, mapSlot), monitor));
+  root.append(el("div", { class: "live" }, el("div", { class: "live-left" }, listBox), monitor));
 
   let selected = parts[0] || null, timer = null, net = null, spider = null, since = 0, feedEl = null, gauges = null, lastStatus = null;
 
@@ -502,10 +501,9 @@ VIEWS.live = async (root, parts, ctx) => {
       el("div", { class: "viewport" }, sheets, spiderCanvas),
       el("div", { class: "walk-foot" }, el("div", { style: "min-width:0" }, el("div", { class: "eyebrow", text: "the crawler" }), action),
         el("div", { class: "carried" }, el("div", { class: "eyebrow", text: "carried home" }), carried)));
-    mapSlot.replaceChildren(netCard);
     monitor.replaceChildren(head, banner,
       el("div", { class: "gauges" }, el("div", { class: "card ring" }, circle, el("div", { class: "lbl" }, ringVal, el("span", { text: "pages" }))), gItems, gQueue, gRef),
-      spiderCard, feedCard);
+      el("div", { class: "live-stage" }, spiderCard, netCard), feedCard);
     net = new SilkMap(canvas, tip, radarStats);
     spider = new PageWalk({ canvas: spiderCanvas, sheets,
       tab: (text) => { tabTitle.textContent = text; },
