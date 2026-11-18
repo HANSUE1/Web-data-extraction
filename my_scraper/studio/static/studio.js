@@ -109,7 +109,7 @@
     const theme = document.documentElement.dataset.theme || "auto";
     if (!tokenCache || tokenCache.theme !== theme) {
       const css = getComputedStyle(document.documentElement), v = (n) => css.getPropertyValue(n).trim();
-      tokenCache = { theme, line: v("--line-2"), lime: v("--lime"), coral: v("--coral"), amber: v("--amber"), ink: v("--ink"), ink3: v("--ink-3"), bg: v("--panel") };
+      tokenCache = { theme, line: v("--line-2"), lime: v("--lime"), coral: v("--coral"), amber: v("--amber"), ink: v("--ink"), ink3: v("--ink-3"), bg: v("--panel"), tide: v("--tide") };
     }
     return tokenCache;
   }
@@ -382,84 +382,112 @@
 
   // ---------------------------------------------------------------- the spider
   /**
-   * A spider on a web. Each fetched page lands in the web as a fly; the spider walks
-   * there on eight legs (two alternating groups of four, two-bone IK per leg), wraps it,
-   * and the items found stream into its abdomen. Refused pages make it back off.
+   * The page being crawled, drawn from its real text, with a spider walking it.
+   * The spider lowers itself onto each page on a silk thread, darts across it in short
+   * bursts the way spiders do, wraps every item it takes (the data flows into its abdomen),
+   * taps the links the crawl will follow, then climbs back up its thread to the next page.
    */
-  class SpiderScene {
-    constructor(canvas, hud) {
-      this.c = canvas; this.ctx = canvas.getContext("2d"); this.hud = hud;
-      this.N = 16; this.spots = new Map(); this.order = []; this.tasks = []; this.particles = []; this.floats = [];
-      this.carried = 0; this.finished = false; this.state = "idle"; this.task = null; this.workT = 0; this.restT = 0;
-      this.s = { x: 0, y: 0, vx: 0, vy: 0, h: -Math.PI / 2, glow: 0, legs: [] };
-      this.ro = new ResizeObserver(() => this.layout()); this.ro.observe(canvas);
-      this.layout();
-      this.s.x = this.cx; this.s.y = this.cy;
+  class PageWalk {
+    constructor(ui) {
+      this.ui = ui; this.c = ui.canvas; this.ctx = this.c.getContext("2d");
+      this.pages = new Map(); this.queue = []; this.page = null; this.sheet = null;
+      this.plan = []; this.target = null; this.actT = 0; this.mode = "hang";
+      this.scroll = 0; this.carried = 0; this.walked = 0; this.finished = false;
+      this.particles = []; this.silk = []; this.ripples = [];
+      this.burst = 0; this.pause = 0; this.drag = null;
+      this.s = { x: 0, y: 0, v: 0, h: Math.PI / 2, glow: 0, legs: [], anchor: null };
+      this.ro = new ResizeObserver(() => this.size()); this.ro.observe(this.c);
+      this.size();
+      this.s.x = this.vw / 2; this.s.y = 46; this.s.anchor = { x: this.vw / 2, y: -10 };
       this.initLegs();
-      this.say("Waiting on the hub for the first page…");
+      this.say("Hanging on, waiting for the first page…");
       this.last = performance.now();
       this.raf = requestAnimationFrame((t) => this.frame(t));
     }
-
-    // --- geometry
-    layout() {
+    size() {
       const r = this.c.getBoundingClientRect(), dpr = devicePixelRatio || 1;
-      this.w = r.width; this.h = r.height; this.c.width = r.width * dpr; this.c.height = r.height * dpr;
+      this.vw = r.width; this.vh = r.height; this.c.width = r.width * dpr; this.c.height = r.height * dpr;
       this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      this.cx = this.w / 2; this.cy = this.h / 2 + 14;
-      this.R = Math.max(80, Math.min(this.w * .62, this.h) / 2 - 18);
-      this.K = Math.max(3, Math.floor((this.R - 34) / 30));
-      this.angles = Array.from({ length: this.N }, (_, j) => (j / this.N) * Math.PI * 2 + Math.sin(j * 7.3) * .07);
     }
-    ringR(k) { return 34 + (k / this.K) * (this.R - 34); }
-    at(k, j) {
-      const a = this.angles[((j % this.N) + this.N) % this.N], stretch = this.w > this.h ? 1.35 : 1;  // an oval web fills a wide card
-      return { x: this.cx + Math.cos(a) * this.ringR(k) * stretch, y: this.cy + Math.sin(a) * this.ringR(k) };
-    }
-    pos(spot) { return this.at(spot.k, spot.j); }
-
-    spotFor(url) {
-      if (this.spots.has(url)) return this.spots.get(url);
-      const taken = new Set([...this.spots.values()].map((s) => s.k + ":" + s.j));
-      const j0 = hue(url) % this.N;
-      for (let k = 1; k <= this.K; k++) for (let d = 0; d <= this.N / 2; d++) for (const j of [j0 + d, j0 - d]) {
-        const jj = ((j % this.N) + this.N) % this.N;
-        if (!taken.has(k + ":" + jj)) return this.place(url, k, jj);
-      }
-      const old = this.order.shift();  // the web is full: the oldest fly makes room
-      this.spots.delete(old.url);
-      return this.place(url, old.k, old.j);
-    }
-    place(url, k, j) {
-      const spot = { url, k, j, status: "pending", born: performance.now(), items: 0, done: 0, wing: Math.random() * 6 };
-      this.spots.set(url, spot); this.order.push(spot);
-      return spot;
-    }
+    say(text) { this.ui.action(text); }
+    path(url) { try { const u = new URL(url); return (u.pathname + u.search) || "/"; } catch (e) { return url; } }
 
     // --- events in
     visit(url, status) {
-      const spot = this.spotFor(url);
-      if (spot.status !== "pending" || this.tasks.some((t) => t.spot === spot) || this.task?.spot === spot) {
-        if (status !== "pending" && spot.status !== "pending") spot.status = status;
+      let page = this.pages.get(url);
+      if (page) { if (status !== "pending") page.status = status; return; }
+      page = { url, status, sketch: null, items: 0, given: 0, seen: performance.now() };
+      this.pages.set(url, page); this.queue.push(page);
+    }
+    sketch(url, sketch) {
+      if (!this.pages.has(url)) this.visit(url, "ok");
+      const page = this.pages.get(url);
+      page.sketch = sketch;
+      if (page.status === "pending") page.status = "ok";
+    }
+    collect(url, n) {
+      if (!n) return;
+      const page = this.pages.get(url);
+      if (!page || page.left) {  // it already moved on: straight into the count
+        this.carried += n; if (page) page.given += n; this.ui.carried(this.carried);
+        if (page) page.items += n;
         return;
       }
-      this.tasks.push({ spot, status, items: 0 });
-    }
-    collect(url, items) {
-      if (!items) return;
-      const spot = this.spots.get(url);
-      const task = [this.task, ...this.tasks].find((t) => t && t.spot === spot);
-      if (task && !task.finalized) task.items += items;
-      else if (spot) this.spray(spot, items);
-      else this.carried += items, this.hud.carried(this.carried);
+      page.items += n;
     }
     finish() { this.finished = true; }
-    say(text) { this.hud.action(text); }
 
-    // --- legs
+    // --- pages
+    mount(page) {
+      const sk = page.sketch, sheet = el("div", { class: "sheet in" });
+      if (page.status === "refused" || page.status === "error" || !sk) {
+        const refused = page.status === "refused", error = page.status === "error";
+        sheet.append(el("div", { class: "s-wall" + (refused ? " refused" : error ? " error" : "") },
+          el("div", { class: "s-wall-mark", text: refused ? "⊘" : error ? "!" : "∅" }),
+          el("h4", { text: refused ? "Not allowed in" : error ? "The page answered with an error" : "Nothing new to read here" }),
+          el("p", { text: refused ? "robots.txt or the site's rules keep crawlers off this page, so the spider leaves it alone."
+            : error ? "The spider touched it, found nothing usable, and moved on."
+            : "Same content as a page already walked, or not a web page." })));
+      } else {
+        if (sk.nav && sk.nav.length) sheet.append(el("div", { class: "s-nav" }, ...sk.nav.map((n) => el("span", { text: n }))));
+        sk.blocks.forEach((b, i) => {
+          if (b.k === "img") { sheet.append(el("div", { class: "s-img", "data-i": i }, icon("page"), el("span", { text: b.alt || "image" }))); return; }
+          sheet.append(el(b.k === "h" ? "h4" : "div", { class: `s-${b.k}${b.item ? " is-item" : ""}`, "data-i": i },
+            ...b.parts.map(([text, href, follow]) => href ? el("span", { class: "s-link" + (follow ? " s-follow" : ""), title: href, text }) : text)));
+        });
+        if (!sk.blocks.length) sheet.append(el("div", { class: "s-wall" }, el("h4", { text: "No readable text on this page" })));
+      }
+      const old = this.sheet;
+      if (old) { old.classList.add("out"); setTimeout(() => old.remove(), 450); }
+      this.ui.sheets.append(sheet);
+      this.sheet = sheet; this.scroll = 0;
+      this.ui.tab((sk && sk.title) || this.path(page.url));
+      this.ui.address(page.url, page.status);
+    }
+    planFor(page, backlog) {
+      const sheet = this.sheet, plan = [];
+      const at = (node, kind) => ({ kind, node, x: Math.min(node.offsetLeft + Math.min(node.offsetWidth * .3, 120), this.vw - 60), y: node.offsetTop + node.offsetHeight / 2 });
+      if (!page.sketch || page.status !== "ok") {
+        const wall = $(".s-wall", sheet);
+        if (wall) plan.push({ ...at(wall, page.status === "ok" ? "look" : "poke"), x: this.vw / 2 });
+        return plan;
+      }
+      const room = Math.max(1, Math.min(6, 6 - Math.floor(backlog * 1.2)));
+      let items = $$(".is-item", sheet);
+      if (!items.length && page.items) items = $$(".s-h, .s-p, .s-li", sheet).slice(0, 1);
+      const pick = (list, n) => list.length <= n ? list : Array.from({ length: n }, (_, k) => list[Math.round(k * (list.length - 1) / Math.max(1, n - 1))]);
+      for (const node of pick(items, room)) plan.push(at(node, "item"));
+      for (const node of pick($$(".s-follow", sheet), items.length ? Math.min(2, room) : Math.min(4, room + 1))) {
+        plan.push({ kind: "link", node, x: node.offsetLeft + node.offsetWidth / 2, y: node.offsetTop + node.offsetHeight / 2 + 2 });
+      }
+      if (!plan.length) { const first = $("[data-i]", sheet); if (first) plan.push(at(first, "look")); }
+      return plan.sort((a, b) => a.y - b.y);
+    }
+
+    // --- legs: two alternating groups of four, two-bone IK each
     initLegs() {
-      const S = this.scale = Math.max(.85, Math.min(1.25, this.R / 190));
-      const rest = [[31, 24], [12, 34], [-8, 34], [-27, 27]];  // legs 1-2 reach forward, 3-4 back
+      const S = this.S = 1;
+      const rest = [[30, 23], [12, 33], [-8, 33], [-26, 26]];  // legs 1-2 reach forward, 3-4 back
       this.s.legs = [];
       for (const side of [-1, 1]) rest.forEach(([f, l], i) => {
         const leg = { side, i, f: f * S, l: l * side * S, hipF: [5, 2.5, 0, -2.5][i] * S, hipL: 3 * side * S,
@@ -468,17 +496,29 @@
         this.s.legs.push(leg);
       });
     }
-    local(f, l, base = this.s) {
-      const c = Math.cos(base.h), s = Math.sin(base.h);
-      return { x: base.x + c * f - s * l, y: base.y + s * f + c * l };
-    }
-    updateLegs(dt) {
-      const sp = this.s, speed = Math.hypot(sp.vx, sp.vy), lead = Math.min(.14, 6 / (speed + 1)) * speed;
-      const dirx = speed ? sp.vx / speed : 0, diry = speed ? sp.vy / speed : 0;
-      const busy = [0, 0];
+    local(f, l) { const s = this.s, c = Math.cos(s.h), n = Math.sin(s.h); return { x: s.x + c * f - n * l, y: s.y + n * f + c * l }; }
+    get onThread() { return !["walk", "act"].includes(this.mode); }
+    updateLegs(dt, now) {
+      const sp = this.s;
+      if (this.onThread) {  // dangling: legs drawn in, slowly paddling
+        for (const leg of sp.legs) {
+          const paddle = Math.sin(now / 260 + leg.i * 1.7 + leg.side) * 3;
+          const p = this.local(leg.f * .85 + (leg.i < 2 ? 8 : -4) + paddle, leg.l * .82);
+          leg.x += (p.x - leg.x) * .35; leg.y += (p.y - leg.y) * .35; leg.stepping = false;
+        }
+        return;
+      }
+      const speed = Math.abs(sp.v), busy = [0, 0];
       for (const leg of sp.legs) if (leg.stepping) busy[leg.group]++;
+      const dx = Math.cos(sp.h), dy = Math.sin(sp.h), lead = Math.min(14, speed * .09);
       for (const leg of sp.legs) {
-        const ideal = this.local(leg.f, leg.l);
+        let ideal = this.local(leg.f, leg.l);
+        if (this.mode === "act" && leg.i === 0) {  // front legs reach out and feel the prey
+          const tap = Math.sin(now / 90 + (leg.side > 0 ? 1.4 : 0));
+          ideal = this.local(leg.f + 10 + tap * 5, leg.l * .55);
+          leg.x += (ideal.x - leg.x) * .4; leg.y += (ideal.y - leg.y) * .4; leg.stepping = false;
+          continue;
+        }
         if (leg.stepping) {
           leg.t = Math.min(1, leg.t + dt / leg.dur);
           const e = leg.t < .5 ? 2 * leg.t * leg.t : 1 - Math.pow(-2 * leg.t + 2, 2) / 2;
@@ -486,17 +526,16 @@
           if (leg.t >= 1) leg.stepping = false;
           continue;
         }
-        const far = Math.hypot(ideal.x - leg.x, ideal.y - leg.y);
-        if (far > 13 * this.scale && !busy[1 - leg.group]) {
-          leg.stepping = true; leg.t = 0; leg.dur = Math.max(.07, .13 - speed / 4000);
-          leg.fx = leg.x; leg.fy = leg.y; leg.tx = ideal.x + dirx * lead; leg.ty = ideal.y + diry * lead;
+        if (Math.hypot(ideal.x - leg.x, ideal.y - leg.y) > 12 * this.S && !busy[1 - leg.group]) {
+          leg.stepping = true; leg.t = 0; leg.dur = Math.max(.055, .12 - speed / 3000);
+          leg.fx = leg.x; leg.fy = leg.y; leg.tx = ideal.x + dx * lead; leg.ty = ideal.y + dy * lead;
           busy[leg.group]++;
         }
       }
     }
     knee(hx, hy, fx, fy, l1, l2) {
       let dx = fx - hx, dy = fy - hy, d = Math.hypot(dx, dy) || .001;
-      if (d > l1 + l2 - .5) { const k = (l1 + l2 - .5) / d; fx = hx + dx * k; fy = hy + dy * k; dx = fx - hx; dy = fy - hy; d = l1 + l2 - .5; }
+      if (d > l1 + l2 - .5) { const k = (l1 + l2 - .5) / d; fx = hx + dx * k; fy = hy + dy * k; d = l1 + l2 - .5; dx = fx - hx; dy = fy - hy; }
       const a = Math.atan2(dy, dx), b = Math.acos(Math.max(-1, Math.min(1, (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d))));
       const k1 = { x: hx + Math.cos(a + b) * l1, y: hy + Math.sin(a + b) * l1 }, k2 = { x: hx + Math.cos(a - b) * l1, y: hy + Math.sin(a - b) * l1 };
       const away = (k) => Math.hypot(k.x - this.s.x, k.y - this.s.y);  // knees arch away from the body
@@ -504,174 +543,203 @@
     }
 
     // --- behaviour
-    spray(spot, items) {
-      const p = this.pos(spot), n = Math.max(3, Math.min(14, Math.round(Math.sqrt(items) * 2.4)));
-      let left = items;
-      for (let i = 0; i < n; i++) {
-        const value = i === n - 1 ? left : Math.floor(items / n); left -= value;
-        this.particles.push({ x0: p.x + (Math.random() - .5) * 8, y0: p.y + (Math.random() - .5) * 8, t: -i * .045, dur: .55 + Math.random() * .35,
-          bend: (Math.random() - .5) * 90, value });
+    next() {
+      const backlog = this.queue.length;
+      if (backlog > 12) for (const p of this.queue.splice(0, backlog - 4)) this.skip(p);  // catching up on a replay
+      const page = this.queue[0];
+      if (!page) return false;
+      if (page.status !== "refused" && page.status !== "error" && !page.sketch && performance.now() - page.seen < 2500) {
+        this.say(`Reading ${this.path(page.url)}…`); return false;
       }
-      this.floats.push({ x: p.x, y: p.y - 10, text: `+${nf.format(items)} item${items === 1 ? "" : "s"}`, t: 0 });
+      this.queue.shift();
+      this.page = page; this.walked++;
+      this.mount(page);
+      this.plan = this.planFor(page, this.queue.length);
+      this.wraps = this.plan.filter((p) => p.kind === "item").length;
+      const first = this.plan[0], sp = this.s;
+      sp.x = first ? Math.max(40, Math.min(this.vw - 40, first.x + (Math.random() - .5) * 60)) : this.vw / 2;
+      sp.anchor = { x: sp.x, y: -10 }; sp.y = -40; sp.h = Math.PI / 2; sp.v = 0;
+      this.landY = Math.max(40, first ? Math.min(first.y - 30, this.vh * .5) : 90);
+      this.mode = "descend";
+      this.say(page.status === "refused" ? `Lowering onto ${this.path(page.url)} — off limits` : `Dropping onto ${this.path(page.url)}`);
+      return true;
     }
-    path(url) { try { const u = new URL(url); return (u.pathname + u.search).slice(0, 60) || "/"; } catch (e) { return url; } }
-
-    update(dt) {
-      const sp = this.s, backlog = this.tasks.length;
-      if (this.state === "idle" && backlog) {
-        if (backlog > 14) for (const t of this.tasks.splice(0, backlog - 4)) this.settle(t, true);  // catch up on a replay
-        this.task = this.tasks.shift(); this.state = "walk";
-        this.say(`Walking to ${this.path(this.task.spot.url)}`);
+    skip(page) {
+      page.left = true;
+      if (page.items > page.given) { this.carried += page.items - page.given; page.given = page.items; this.ui.carried(this.carried); }
+      this.walked++;
+    }
+    leave() {
+      const page = this.page;
+      if (page) { page.left = true; if (page.items > page.given) this.spray(this.s.x, this.s.y, page.items - page.given, page); }
+      this.page = null;
+    }
+    spray(x, y, n, page) {
+      if (!n) return;
+      page.given += n;
+      const count = Math.max(3, Math.min(12, Math.round(Math.sqrt(n) * 2.2)));
+      let left = n;
+      for (let i = 0; i < count; i++) {
+        const value = i === count - 1 ? left : Math.floor(n / count); left -= value;
+        this.particles.push({ x0: x + (Math.random() - .5) * 60, y0: y + (Math.random() - .5) * 14, t: -i * .05, dur: .5 + Math.random() * .3, bend: (Math.random() - .5) * 70, value });
       }
-      let target = null;
-      if (this.state === "walk" || this.state === "work") target = this.pos(this.task.spot);
-      else if (this.finished || this.restT > 1.5) target = { x: this.cx, y: this.cy };
-      if (this.state === "idle") {
-        this.restT += dt;
-        if (this.finished && !this.rested && Math.hypot(sp.x - this.cx, sp.y - this.cy) < 6) {
-          this.rested = true; this.say(`Resting on the hub · ${nf.format(this.carried)} items carried`);
+    }
+
+    update(dt, now) {
+      const sp = this.s, hurry = 1 + Math.min(4, this.queue.length * .4);
+      if (this.mode === "hang" || this.mode === "rest") {
+        if (this.queue.length && this.mode === "rest") this.mode = "ascend";
+        else if (this.queue.length && !this.next()) { /* waiting for the page's text */ }
+        if (this.mode === "hang" || this.mode === "rest") {
+          sp.x = sp.anchor.x + Math.sin(now / 900) * 6;
+          const restY = (this.mode === "rest" ? this.vh * .42 : 46) + this.scroll;
+          sp.y += (restY - sp.y) * Math.min(1, dt * 2);
+          sp.h = Math.PI / 2 + Math.sin(now / 900) * .08;
+          if (!this.queue.length && this.finished && this.mode === "hang") {
+            this.mode = "rest"; this.say(`Done · ${nf.format(this.walked)} pages walked · ${nf.format(this.carried)} items carried home`);
+          }
         }
-      } else this.restT = 0;
-
-      const hurry = 1 + Math.min(4, backlog * .35);
-      if (target) {
-        const dx = target.x - sp.x, dy = target.y - sp.y, d = Math.hypot(dx, dy);
-        const max = (this.state === "idle" ? 70 : 165) * hurry * this.scale, want = d < 4 ? 0 : Math.min(max, d * 4);
-        const tvx = d ? dx / d * want : 0, tvy = d ? dy / d * want : 0, k = Math.min(1, dt * 7);
-        sp.vx += (tvx - sp.vx) * k; sp.vy += (tvy - sp.vy) * k;
-        if (this.state === "walk" && d < 5) { this.state = "work"; this.workT = 0; this.say(this.task.status === "refused" ? "Refused — this page is off limits" : this.task.status === "error" ? "The page answered with an error" : `Wrapping ${this.path(this.task.spot.url)}`); }
-      } else { sp.vx *= .8; sp.vy *= .8; }
-      if (reduced && target && this.state === "walk") { sp.x = target.x; sp.y = target.y; }
-      sp.x += sp.vx * dt; sp.y += sp.vy * dt;
-      const speed = Math.hypot(sp.vx, sp.vy);
-      if (speed > 8) { let dh = Math.atan2(sp.vy, sp.vx) - sp.h; dh = Math.atan2(Math.sin(dh), Math.cos(dh)); sp.h += dh * Math.min(1, dt * 9); }
-
-      if (this.state === "work") {
-        this.workT += dt * hurry;
-        if (this.workT > .3 && !this.task.finalized) this.settle(this.task, false);
-        if (this.workT > (this.task.status === "ok" ? .95 : .6)) { this.state = "idle"; this.task = null; if (!this.tasks.length && !this.finished) this.say("Listening for the next page…"); }
+      } else if (this.mode === "descend") {
+        sp.y += 260 * hurry * dt; sp.x = sp.anchor.x + Math.sin(now / 400) * 2; sp.h = Math.PI / 2;
+        if (sp.y >= this.landY + this.scroll) {
+          this.mode = this.plan.length ? "walk" : "ascend";
+          this.drag = { x: sp.x, y: sp.y };  // its dragline stays fixed where it landed
+          this.burst = 0; this.pause = .15;
+          if (this.mode === "ascend") sp.anchor = { x: sp.x, y: -10 };
+        }
+      } else if (this.mode === "walk") {
+        const t = this.plan[0], dx = t.x - sp.x, dy = t.y - sp.y, d = Math.hypot(dx, dy);
+        const want = Math.atan2(dy, dx), diff = Math.atan2(Math.sin(want - sp.h), Math.cos(want - sp.h));
+        let speed = 0;
+        if (Math.abs(diff) > .9 && d > 6) {
+          sp.h += Math.sign(diff) * Math.min(Math.abs(diff), 7 * dt);  // stop and pivot on the spot first
+        } else {
+          sp.h += diff * Math.min(1, dt * 10);
+          if (d < 46) speed = Math.max(30, d * 5) * hurry;
+          else if (this.pause > 0) this.pause -= dt * hurry;
+          else if (this.burst > 0) { this.burst -= dt; speed = 210 * hurry; }
+          else if (Math.random() < .35) this.pause = .07 + Math.random() * .25;  // the stop-start of a hunting spider
+          else this.burst = .22 + Math.random() * .4;
+          speed = Math.min(speed, d * 8) * Math.pow(Math.max(0, Math.cos(diff)), 2);  // slow while turning, or it circles the target
+        }
+        sp.v += (speed - sp.v) * Math.min(1, dt * 16);
+        sp.x += Math.cos(sp.h) * sp.v * dt; sp.y += Math.sin(sp.h) * sp.v * dt;
+        if (d < 6) {
+          this.mode = "act"; this.actT = 0; sp.v = 0; this.target = t;
+          this.say(t.kind === "item" ? "Wrapping an item" : t.kind === "link" ? `Tapping a link: ${t.node.textContent.trim().slice(0, 40)}`
+            : t.kind === "poke" ? "Touched it — backing off" : "Feeling around the page");
+        }
+      } else if (this.mode === "act") {
+        const t = this.target, length = { item: 1.05, link: .55, poke: .6, look: .45 }[t.kind] / hurry;
+        this.actT += dt;
+        if (t.kind === "item" && Math.random() < dt * 22) {  // silk thrown over the prey
+          this.silk.push({ x: t.node.offsetLeft + Math.random() * t.node.offsetWidth, y: t.node.offsetTop + Math.random() * t.node.offsetHeight, life: 1 });
+        }
+        if (this.actT > length * .5 && !t.done) {
+          t.done = true;
+          if (t.kind === "item") {
+            t.node.classList.add("caught");
+            const share = this.wraps > 0 ? Math.round((this.page.items - this.page.given) / this.wraps) : 0;
+            this.wraps--;
+            this.spray(t.x, t.y, Math.max(0, share), this.page);
+          } else if (t.kind === "link") {
+            t.node.classList.add("tapped"); this.ripples.push({ x: t.x, y: t.y, t: 0 });
+          } else if (t.kind === "poke") {
+            t.node.classList.add("shake"); sp.v = -160;
+          }
+        }
+        if (t.kind === "poke") { sp.x += Math.cos(sp.h) * sp.v * dt; sp.y += Math.sin(sp.h) * sp.v * dt; sp.v *= .9; }
+        if (this.actT >= length) {
+          this.plan.shift(); this.mode = this.plan.length ? "walk" : "ascend"; this.burst = 0; this.pause = .1;
+          if (this.mode === "ascend") { sp.anchor = { x: sp.x, y: -10 }; this.say(this.queue.length ? "Climbing up to the next page" : "Climbing back up the thread"); }
+        }
+      } else if (this.mode === "ascend") {
+        const up = -Math.PI / 2, diff = Math.atan2(Math.sin(up - sp.h), Math.cos(up - sp.h));
+        sp.h += diff * Math.min(1, dt * 10);
+        sp.y -= 300 * hurry * dt;
+        if (sp.y < this.scroll - 50) {
+          this.leave(); this.drag = null;
+          sp.anchor = { x: sp.x, y: -10 }; sp.h = Math.PI / 2;
+          this.mode = "hang"; sp.y = this.scroll - 50;
+          if (!this.next() && !this.finished) this.say("Listening for the next page…");
+        }
       }
-      this.updateLegs(dt);
-
+      // the camera follows the spider down long pages
+      if (this.sheet && (this.mode === "walk" || this.mode === "act")) {
+        const max = Math.max(0, this.sheet.offsetHeight - this.vh + 40), want = Math.max(0, Math.min(max, sp.y - this.vh * .45));
+        this.scroll += (want - this.scroll) * Math.min(1, dt * 3.5);
+      }
+      if (this.sheet) this.sheet.style.transform = `translateY(${-this.scroll}px)`;
+      this.updateLegs(dt, now);
       for (const p of this.particles) p.t += dt / p.dur;
-      for (const p of this.particles) if (p.t >= 1 && !p.landed) { p.landed = true; this.carried += p.value; sp.glow = 1; this.hud.carried(this.carried); }
+      for (const p of this.particles) if (p.t >= 1 && !p.landed) { p.landed = true; this.carried += p.value; sp.glow = 1; this.ui.carried(this.carried); }
       this.particles = this.particles.filter((p) => p.t < 1);
-      for (const f of this.floats) f.t += dt;
-      this.floats = this.floats.filter((f) => f.t < 1.4);
-      sp.glow = Math.max(0, sp.glow - dt * 1.6);
-    }
-    settle(task, quick) {
-      task.finalized = true;
-      task.spot.status = task.status === "pending" ? "ok" : task.status;
-      task.spot.done = performance.now();
-      if (task.status === "refused" && !quick) { const a = this.s.h + Math.PI; this.s.vx = Math.cos(a) * 120; this.s.vy = Math.sin(a) * 120; }
-      if (!task.items) return;
-      if (quick) { this.carried += task.items; this.hud.carried(this.carried); }
-      else this.spray(task.spot, task.items);
+      for (const s of this.silk) s.life -= dt * .9;
+      this.silk = this.silk.filter((s) => s.life > 0);
+      for (const r of this.ripples) r.t += dt * 1.8;
+      this.ripples = this.ripples.filter((r) => r.t < 1);
+      sp.glow = Math.max(0, sp.glow - dt * 1.5);
     }
 
     // --- drawing
     frame(now) {
       const dt = Math.min(.05, (now - this.last) / 1000); this.last = now;
-      this.update(dt);
-      const { ctx } = this, t = tokens();
-      ctx.clearRect(0, 0, this.w, this.h);
-      this.drawWeb(ctx, t, now);
-      for (const spot of this.spots.values()) this.drawSpot(ctx, t, spot, now);
-      // dragline: the silk the spider trails back to the hub
-      const sp = this.s, back = this.local(-18 * this.scale, 0);
-      ctx.strokeStyle = t.ink; ctx.globalAlpha = .28; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(this.cx, this.cy); ctx.quadraticCurveTo((this.cx + back.x) / 2, (this.cy + back.y) / 2 + 18, back.x, back.y); ctx.stroke();
+      this.update(dt, now);
+      const { ctx } = this, t = tokens(), sp = this.s;
+      ctx.clearRect(0, 0, this.vw, this.vh);
+      ctx.save(); ctx.translate(0, -this.scroll);
+      const spin = this.local(-19 * this.S, 0);
+      ctx.strokeStyle = t.ink; ctx.lineWidth = 1;
+      if (!this.onThread) {
+        if (this.drag) {  // the dragline: from the top, down to where it landed, then trailing behind it
+          ctx.globalAlpha = .18; ctx.beginPath(); ctx.moveTo(this.drag.x, this.scroll - 10); ctx.lineTo(this.drag.x, this.drag.y); ctx.stroke();
+          ctx.globalAlpha = .32; ctx.beginPath(); ctx.moveTo(this.drag.x, this.drag.y); ctx.lineTo(spin.x, spin.y); ctx.stroke();
+        }
+      } else {  // hanging from its thread
+        const end = this.mode === "ascend" ? this.local(12, 0) : spin;
+        ctx.globalAlpha = .55; ctx.beginPath(); ctx.moveTo(sp.anchor.x, this.scroll - 10);
+        ctx.quadraticCurveTo((sp.anchor.x + end.x) / 2 + Math.sin(now / 700) * 4, (this.scroll - 10 + end.y) / 2, end.x, end.y); ctx.stroke();
+      }
       ctx.globalAlpha = 1;
-      if (this.state === "work" && this.task.status === "ok") this.drawWrap(ctx, t, this.pos(this.task.spot));
+      for (const s of this.silk) { ctx.globalAlpha = s.life * .6; ctx.beginPath(); ctx.moveTo(spin.x, spin.y); ctx.lineTo(s.x, s.y); ctx.stroke(); }
+      for (const r of this.ripples) { ctx.globalAlpha = 1 - r.t; ctx.strokeStyle = t.tide; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(r.x, r.y, 6 + r.t * 26, 0, 6.283); ctx.stroke(); }
+      ctx.globalAlpha = 1;
       this.drawSpider(ctx, t, now);
-      const abd = this.local(-10 * this.scale, 0);
+      const abd = this.local(-10 * this.S, 0);
       for (const p of this.particles) {
         if (p.t < 0) continue;
-        const e = 1 - Math.pow(1 - p.t, 3), mx = (p.x0 + abd.x) / 2 + p.bend, my = (p.y0 + abd.y) / 2 - 40;
+        const e = 1 - Math.pow(1 - p.t, 3), mx = (p.x0 + abd.x) / 2 + p.bend, my = (p.y0 + abd.y) / 2 - 36;
         const x = (1 - e) * (1 - e) * p.x0 + 2 * (1 - e) * e * mx + e * e * abd.x, y = (1 - e) * (1 - e) * p.y0 + 2 * (1 - e) * e * my + e * e * abd.y;
         ctx.fillStyle = t.lime; ctx.globalAlpha = 1 - p.t * .3; ctx.fillRect(x - 2, y - 2, 4, 4);
       }
-      ctx.globalAlpha = 1;
-      ctx.font = `500 12px "Geist Mono", monospace`; ctx.textAlign = "center";
-      for (const f of this.floats) { ctx.globalAlpha = Math.max(0, 1 - f.t / 1.4); ctx.fillStyle = t.lime; ctx.fillText(f.text, f.x, f.y - f.t * 26); }
-      ctx.globalAlpha = 1; ctx.textAlign = "start";
+      ctx.restore(); ctx.globalAlpha = 1;
       this.raf = requestAnimationFrame((n) => this.frame(n));
     }
-    drawWeb(ctx, t, now) {
-      ctx.strokeStyle = t.line; ctx.lineWidth = 1;
-      ctx.globalAlpha = .9;
-      ctx.beginPath();
-      for (let j = 0; j < this.N; j++) { const p = this.at(this.K + .35, j); ctx.moveTo(this.cx, this.cy); ctx.lineTo(p.x, p.y); }
-      ctx.stroke();
-      ctx.globalAlpha = .7;
-      for (let k = .35; k <= this.K; k += k < 1 ? .325 : 1) {
-        ctx.beginPath();
-        for (let j = 0; j <= this.N; j++) {
-          const p = this.at(k, j);
-          if (!j) { ctx.moveTo(p.x, p.y); continue; }
-          const q = this.at(k, j - 1), mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
-          ctx.quadraticCurveTo(mx + (this.cx - mx) * .07, my + (this.cy - my) * .07, p.x, p.y);  // silk sags toward the hub
-        }
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
-    }
-    drawSpot(ctx, t, spot, now) {
-      const p = this.pos(spot), age = Math.max(0, Math.min(1, (now - spot.born) / 350));
-      if (spot.status === "pending") {  // a fly, buzzing
-        const flap = Math.sin(now / 28 + spot.wing) * .5 + .5;
-        ctx.fillStyle = t.ink3; ctx.globalAlpha = .5 * age;
-        ctx.beginPath(); ctx.ellipse(p.x - 3, p.y - 2, 4, 2 + flap * 2, -.6, 0, 6.283); ctx.ellipse(p.x + 3, p.y - 2, 4, 2 + flap * 2, .6, 0, 6.283); ctx.fill();
-        ctx.globalAlpha = age; ctx.fillStyle = t.ink; ctx.beginPath(); ctx.ellipse(p.x, p.y, 2.2, 3.4, 0, 0, 6.283); ctx.fill();
-      } else if (spot.status === "ok") {  // wrapped in silk
-        const pop = Math.max(0, Math.min(1, (now - spot.done) / 400)), r = 4 + (1 - pop) * 6;
-        ctx.globalAlpha = .25 * (1 - pop); ctx.fillStyle = t.lime; ctx.beginPath(); ctx.arc(p.x, p.y, r + 8, 0, 6.283); ctx.fill();
-        ctx.globalAlpha = 1; ctx.fillStyle = t.lime; ctx.beginPath(); ctx.ellipse(p.x, p.y, 3.4, 5, 0, 0, 6.283); ctx.fill();
-        ctx.strokeStyle = t.bg; ctx.lineWidth = .8; ctx.beginPath();
-        for (const dy of [-2, 0, 2]) { ctx.moveTo(p.x - 3, p.y + dy - 1); ctx.lineTo(p.x + 3, p.y + dy + 1); }
-        ctx.stroke();
-      } else {
-        const color = spot.status === "refused" ? t.coral : t.amber;
-        ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.globalAlpha = 1;
-        ctx.beginPath(); ctx.arc(p.x, p.y, 6, 0, 6.283); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(p.x - 3, p.y - 3); ctx.lineTo(p.x + 3, p.y + 3); ctx.moveTo(p.x + 3, p.y - 3); ctx.lineTo(p.x - 3, p.y + 3); ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
-    }
-    drawWrap(ctx, t, p) {
-      const k = this.workT;
-      ctx.strokeStyle = t.ink; ctx.lineWidth = 1; ctx.globalAlpha = .55;
-      for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.ellipse(p.x, p.y, 7 + i * 3, 4 + i * 2, k * 9 + i * 1.3, 0, Math.PI * 1.4); ctx.stroke(); }
-      ctx.globalAlpha = 1;
-    }
     drawSpider(ctx, t, now) {
-      const sp = this.s, S = this.scale, walking = Math.hypot(sp.vx, sp.vy) > 10;
-      const bob = walking ? Math.sin(now / 55) * .6 : Math.sin(now / 600) * .4;
-      // shadow
-      ctx.globalAlpha = .22; ctx.fillStyle = "#000";
-      ctx.beginPath(); ctx.ellipse(sp.x + 4, sp.y + 7, 15 * S, 9 * S, sp.h, 0, 6.283); ctx.fill(); ctx.globalAlpha = 1;
-      // legs
-      ctx.strokeStyle = t.ink; ctx.lineCap = "round"; ctx.lineJoin = "round";
+      const sp = this.s, S = this.S, moving = Math.abs(sp.v) > 12;
+      const bob = moving ? Math.sin(now / 45) * .6 : Math.sin(now / 650) * .35;
+      if (!this.onThread) { ctx.globalAlpha = .25; ctx.fillStyle = "#000"; ctx.beginPath(); ctx.ellipse(sp.x + 3, sp.y + 6, 14 * S, 8 * S, sp.h, 0, 6.283); ctx.fill(); ctx.globalAlpha = 1; }
+      ctx.strokeStyle = t.ink; ctx.fillStyle = t.ink; ctx.lineCap = "round"; ctx.lineJoin = "round";
       for (const leg of sp.legs) {
         const hip = this.local(leg.hipF, leg.hipL);
         let { knee, fx, fy } = this.knee(hip.x, hip.y, leg.x, leg.y, leg.l1, leg.l2);
-        if (leg.stepping) { const lift = Math.sin(leg.t * Math.PI) * 4 * S; knee = { x: knee.x + (knee.x - sp.x) / 30 * lift, y: knee.y + (knee.y - sp.y) / 30 * lift }; }
-        ctx.lineWidth = 2.4 * S; ctx.beginPath(); ctx.moveTo(hip.x, hip.y); ctx.lineTo(knee.x, knee.y); ctx.stroke();
+        if (leg.stepping) {  // the knee rises as the foot swings
+          const lift = Math.sin(leg.t * Math.PI) * 5 * S, d = Math.hypot(knee.x - sp.x, knee.y - sp.y) || 1;
+          knee = { x: knee.x + (knee.x - sp.x) / d * lift, y: knee.y + (knee.y - sp.y) / d * lift };
+        }
+        ctx.lineWidth = 2.6 * S; ctx.beginPath(); ctx.moveTo(hip.x, hip.y); ctx.lineTo(knee.x, knee.y); ctx.stroke();
         ctx.lineWidth = 1.5 * S; ctx.beginPath(); ctx.moveTo(knee.x, knee.y); ctx.lineTo(fx, fy); ctx.stroke();
+        ctx.beginPath(); ctx.arc(knee.x, knee.y, 1.4 * S, 0, 6.283); ctx.fill();
       }
       ctx.save(); ctx.translate(sp.x, sp.y); ctx.rotate(sp.h);
-      // pedipalps
-      ctx.lineWidth = 1.4 * S; ctx.beginPath(); ctx.moveTo(8 * S, -2 * S); ctx.lineTo(13 * S, -3.5 * S); ctx.moveTo(8 * S, 2 * S); ctx.lineTo(13 * S, 3.5 * S); ctx.stroke();
-      // abdomen, glowing while it takes in data
-      ctx.shadowColor = t.lime; ctx.shadowBlur = 22 * sp.glow;
-      ctx.fillStyle = t.ink; ctx.beginPath(); ctx.ellipse(-10 * S, 0, (9.5 + bob) * S, (7.4 + bob * .6) * S, 0, 0, 6.283); ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = t.lime; ctx.globalAlpha = .55 + sp.glow * .45;
+      const palp = this.mode === "act" ? Math.sin(now / 70) * 1.6 : Math.sin(now / 500) * .6;  // pedipalps twitch while it works
+      ctx.lineWidth = 1.5 * S; ctx.beginPath();
+      ctx.moveTo(7 * S, -2 * S); ctx.lineTo(12 * S, (-3.5 - palp) * S); ctx.moveTo(7 * S, 2 * S); ctx.lineTo(12 * S, (3.5 + palp) * S); ctx.stroke();
+      ctx.shadowColor = t.lime; ctx.shadowBlur = 22 * sp.glow;  // the abdomen glows as data flows in
+      ctx.beginPath(); ctx.ellipse(-10 * S, 0, (9.5 + bob) * S, (7.4 + bob * .6) * S, 0, 0, 6.283); ctx.fill();
+      ctx.shadowBlur = 0; ctx.fillStyle = t.lime; ctx.globalAlpha = .55 + sp.glow * .45;
       for (const [x, w] of [[-6, 2.2], [-10, 3], [-14, 2.1]]) { ctx.beginPath(); ctx.moveTo((x + 1.6) * S, 0); ctx.lineTo((x - 1.4) * S, -w * S); ctx.lineTo((x - .4) * S, 0); ctx.lineTo((x - 1.4) * S, w * S); ctx.closePath(); ctx.fill(); }
-      ctx.globalAlpha = 1;
-      // cephalothorax and eyes
-      ctx.fillStyle = t.ink; ctx.beginPath(); ctx.ellipse(2 * S, 0, 6.4 * S, 5.4 * S, 0, 0, 6.283); ctx.fill();
+      ctx.globalAlpha = 1; ctx.fillStyle = t.ink; ctx.beginPath(); ctx.ellipse(2 * S, 0, 6.4 * S, 5.4 * S, 0, 0, 6.283); ctx.fill();
       ctx.fillStyle = t.bg;
       for (const [x, y, r] of [[6, -1.5, 1.1], [6, 1.5, 1.1], [4.6, -3, .65], [4.6, 3, .65]]) { ctx.beginPath(); ctx.arc(x * S, y * S, r * S, 0, 6.283); ctx.fill(); }
       ctx.restore();
@@ -1077,7 +1145,7 @@
   VIEWS.live = async (root, parts, ctx) => {
     crumbs("Seine", "Live");
     root.append(el("div", { class: "page-head" }, el("div", {}, el("div", { class: "eyebrow", text: "Crawls" }), el("h1", {}, "The net, ", el("em", { text: "live" })),
-      el("p", { text: "Watch the spider walk the web: every page it reaches is a fly it wraps up, and the items it finds stream home. The map on the left shows how the pages connect." })),
+      el("p", { text: "Watch the spider walk each page it crawls: it drops in on a thread, wraps every item it takes and taps the links it will follow next. The map on the left shows how the pages connect." })),
       el("div", { class: "actions" }, el("a", { class: "btn primary", href: "#/extract" }, icon("bolt"), "New extraction"))));
     const listBox = el("div", { class: "jobs" });
     const mapSlot = el("div");
@@ -1121,17 +1189,23 @@
       feedEl.filter = filter;
       const action = el("div", { class: "spider-action", text: "" });
       const carried = el("div", { class: "num", text: "0" });
-      const spiderCanvas = el("canvas", { "aria-label": "Animated spider walking the crawl" });
-      const spiderCard = el("div", { class: "card spider-stage" }, spiderCanvas,
-        el("div", { class: "spider-hud" }, el("div", {}, el("div", { class: "eyebrow", text: "the crawler" }), action),
-          el("div", { class: "carried" }, el("div", { class: "eyebrow", text: "carried home" }), carried)),
-        el("div", { class: "legend" }, ...[["--ink-3", "fly = page found"], ["--lime", "wrapped = data taken"], ["--coral", "refused"], ["--amber", "error"]].map(([c, l]) => el("span", {}, el("i", { style: `background:var(${c})` }), l))));
+      const spiderCanvas = el("canvas", { "aria-hidden": "true" });
+      const sheets = el("div", { class: "sheets" });
+      const addr = el("span", { class: "addr-url", text: "waiting…" }), chip = el("span", { class: "addr-chip" }), tabTitle = el("span", { class: "tab-title", text: "New tab" });
+      const spiderCard = el("div", { class: "card walk", role: "img", "aria-label": "The page being crawled, with an animated spider walking it" },
+        el("div", { class: "browser" }, el("div", { class: "dots" }, el("i"), el("i"), el("i")), el("div", { class: "tab" }, icon("page"), tabTitle),
+          el("div", { class: "addr" }, chip, addr)),
+        el("div", { class: "viewport" }, sheets, spiderCanvas),
+        el("div", { class: "walk-foot" }, el("div", { style: "min-width:0" }, el("div", { class: "eyebrow", text: "the crawler" }), action),
+          el("div", { class: "carried" }, el("div", { class: "eyebrow", text: "carried home" }), carried)));
       mapSlot.replaceChildren(netCard);
       monitor.replaceChildren(head, banner,
         el("div", { class: "gauges" }, el("div", { class: "card ring" }, circle, el("div", { class: "lbl" }, ringVal, el("span", { text: "pages" }))), gItems, gQueue, gRef),
         spiderCard, feedCard);
       net = new Constellation(canvas, tip);
-      spider = new SpiderScene(spiderCanvas, {
+      spider = new PageWalk({ canvas: spiderCanvas, sheets,
+        tab: (text) => { tabTitle.textContent = text; },
+        address: (url, status) => { addr.textContent = url; chip.className = "addr-chip " + status; chip.textContent = status === "ok" ? "200" : status === "refused" ? "refused" : status === "error" ? "error" : "…"; },
         action: (text) => { if (action.textContent !== text) { action.textContent = text; action.animate?.([{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], { duration: 260, easing: "ease-out" }); } },
         carried: (n) => { carried.textContent = nf.format(n); carried.animate?.([{ transform: "scale(1.12)" }, { transform: "none" }], { duration: 220 }); },
       });
@@ -1163,6 +1237,7 @@
     function addEvents(events) {
       const frag = document.createDocumentFragment();
       for (const ev of events) {
+        if (ev.message === "page_sketch") { spider.sketch(ev.url, ev.sketch); continue; }
         if (ev.url) {
           const status = pageStatus(ev);
           if (ev.message !== "trying_browser" || !net.nodes.has(net.key(ev.url))) net.add(ev.url, status);

@@ -5,6 +5,7 @@ import json
 from aiohttp.test_utils import TestClient, TestServer
 
 from my_scraper.service.engine import ScrapeService
+from my_scraper.studio import sketch
 from my_scraper.studio.jobs import InvalidJob, config_from_request
 from my_scraper.studio.server import create_app
 
@@ -105,6 +106,8 @@ def test_a_job_crawls_and_its_run_shows_in_the_library(site, tmp_path):
         assert job["status"] == "done", job
         assert job["progress"]["pages"] == 3 and job["progress"]["items"] == 3
         assert any(e["message"] == "crawl_completed" for e in job["events"])
+        drawn = [e for e in job["events"] if e["message"] == "page_sketch"]
+        assert len(drawn) == 3 and drawn[0]["sketch"]["blocks"]  # the live view gets every page to draw
         runs = (await (await client.get("/api/runs")).json())["runs"]
         assert [r["id"] for r in runs] == [job["run_id"]] and runs[0]["items"] == 3
 
@@ -114,3 +117,32 @@ def test_a_job_crawls_and_its_run_shows_in_the_library(site, tmp_path):
         async with TestClient(TestServer(create_app("outputs/results", service))) as client:
             await steps(client)
     asyncio.run(go())
+
+
+def test_sketch_keeps_text_links_and_marks_items_and_next_links():
+    html = """<html><head><title>Chairs</title></head><body>
+      <nav><a href="/">Home</a><a href="/about">About</a></nav>
+      <ul><li><a href="/c/1">Garden</a></li><li><a href="/c/2">Office</a></li><li><a href="/c/3">Kids</a></li></ul>
+      <h1>All chairs</h1>
+      <div class="card"><h3><a href="/item/1">Folding garden chair</a></h3><p>Weatherproof, <b>$19</b></p></div>
+      <p>More on <a href="/page/2">page 2</a> and <a href="mailto:x@y.z">mail</a>.</p>
+      <script>var hidden = "not text";</script></body></html>"""
+    queued = {"https://a.test/page/2", "https://a.test/item/1"}
+    drawn = sketch.build("https://a.test/", {"content": html, "headers": {"content-type": "text/html"}},
+                         [{"title": "Folding garden chair", "price": "$19"}], lambda href: href in queued)
+    assert drawn["title"] == "Chairs" and drawn["nav"] == ["Home", "About"]
+    kinds = [b["k"] for b in drawn["blocks"]]
+    assert kinds[0] == "links" and "Garden" in str(drawn["blocks"][0]["parts"])  # a menu is one cloud of links
+    item = next(b for b in drawn["blocks"] if b.get("item"))
+    assert item["parts"][0][:3] == ["Folding garden chair", "https://a.test/item/1", True]
+    paragraph = drawn["blocks"][-1]
+    assert ["page 2", "https://a.test/page/2", True] in paragraph["parts"]
+    assert "mail" in "".join(part[0] for part in paragraph["parts"]) and not any("mailto" in str(part[1]) for part in paragraph["parts"])
+    assert "not text" not in str(drawn)
+
+
+def test_sketch_of_data_lists_the_items():
+    drawn = sketch.build("https://a.test/api", {"content": "[]", "headers": {"content-type": "application/json"}},
+                         [{"name": "Garden chair"}, {"name": "Desk lamp"}], lambda href: False)
+    assert [b["parts"][0][0] for b in drawn["blocks"]] == ["Garden chair", "Desk lamp"]
+

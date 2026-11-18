@@ -7,7 +7,7 @@ import re
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
 from parsel import Selector
@@ -149,6 +149,8 @@ class ProductionCrawler:
         self._item_selector: Optional[str] = config.item_selector
         self._examples: Dict[str, str] = dict(config.examples)
         self.learned_selectors: Optional[Tuple[str, Dict[str, str]]] = None
+        # Called with (url, fetch_result, page) once a page is parsed and its links queued. The studio uses it.
+        self.on_page: Optional[Callable[[str, Dict[str, Any], ParsedPage], None]] = None
         self._queued: Set[str] = set()
         self._start_urls: Set[str] = set()
         self._domain_limits: Dict[str, asyncio.Semaphore] = {}
@@ -600,6 +602,8 @@ class ProductionCrawler:
             self.extract_links(fetch_result["content"], final_url, depth, follow_pagination=new_items > 0)
         if page is not None:
             self._follow_discoveries(url, final_url, depth, fetch_result, page)
+            if self.on_page:  # last, so the links it queued are known
+                self.on_page(final_url, fetch_result, page)
 
     @staticmethod
     def _is_html(fetch_result: Dict[str, Any]) -> bool:

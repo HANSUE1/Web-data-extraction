@@ -14,6 +14,8 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 from my_scraper.cli.main import build_config, build_parser
 from my_scraper.config.settings import CrawlConfig
 from my_scraper.core.crawler import ProductionCrawler
+from my_scraper.studio import sketch
+from my_scraper.utils.urls import normalize_url
 
 MAX_EVENTS = 4000
 MAX_JOBS_KEPT = 50
@@ -153,6 +155,25 @@ class Job:
         return data
 
 
+def _sketch(job: Job, url: str, fetch_result: Dict[str, Any], page):
+    """Send the live view a light copy of the page, marking items and the links the crawl will visit next."""
+    crawler = job.crawler
+
+    def follows(href: str) -> bool:
+        try:
+            key = normalize_url(href)
+        except ValueError:
+            return False
+        return key in crawler._queued and key not in crawler.state.visited  # queued, still to come
+
+    try:
+        drawn = sketch.build(url, fetch_result, page.items, follows)
+    except Exception as e:  # drawing the page must never stop the crawl
+        job.add_event({"level": "DEBUG", "message": "sketch_failed", "url": url, "error": str(e)})
+        return
+    job.add_event({"level": "INFO", "message": "page_sketch", "url": url, "sketch": drawn})
+
+
 class JobQueue:
     def __init__(self):
         self.jobs: Dict[str, Job] = {}
@@ -206,6 +227,7 @@ class JobQueue:
         logger = logging.getLogger(job.config.name)
         try:
             job.crawler = ProductionCrawler(job.config)
+            job.crawler.on_page = lambda url, fetch_result, page: _sketch(job, url, fetch_result, page)
             logger.addHandler(_Feed(job))  # after the crawler set up its logger, which clears handlers
             job.task = asyncio.create_task(job.crawler.crawl())
             await job.task
