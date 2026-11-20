@@ -124,7 +124,17 @@ export class PageWalk {
       plan.push({ kind: "link", node, x: node.offsetLeft + node.offsetWidth / 2, y: node.offsetTop + node.offsetHeight / 2 + 2 });
     }
     if (!plan.length) { const first = $("[data-i]", sheet); if (first) plan.push(at(first, "look")); }
+    const m = this.margin(), floor = Math.max(0, sheet.offsetHeight - this.vh + 40) + this.vh - m;  // lowest point the camera can bring into frame
+    for (const p of plan) { p.x = this.wallX(p.x); p.y = Math.max(m, Math.min(floor, p.y)); }  // targets inside the walls, or it could never reach them
     return plan.sort((a, b) => a.y - b.y);
+  }
+  // invisible walls: keep the whole leg span (feet reach ~45 units from the body) inside the box
+  margin() { return Math.min(45 * S, this.vw / 2, this.vh / 2); }
+  wallX(x) { const m = this.margin(); return Math.max(m, Math.min(this.vw - m, x)); }
+  walls() {
+    const sp = this.s, m = this.margin();
+    sp.x = this.wallX(sp.x);
+    sp.y = Math.max(this.scroll + m, Math.min(this.scroll + this.vh - m, sp.y));
   }
 
   // --- legs: alternating tetrapod gait (L1 R2 L3 R4, then the others), two-bone IK each
@@ -250,7 +260,7 @@ export class PageWalk {
     this.plan = this.planFor(page, this.queue.length);
     this.wraps = this.plan.filter((p) => p.kind === "item").length;
     const first = this.plan[0], sp = this.s;
-    sp.x = first ? Math.max(40, Math.min(this.vw - 40, first.x + (Math.random() - .5) * 60)) : this.vw / 2;
+    sp.x = first ? this.wallX(first.x + (Math.random() - .5) * 60) : this.vw / 2;
     sp.anchor = { x: sp.x, y: -10 }; sp.y = -40; sp.h = sp.m = Math.PI / 2; sp.v = 0;
     this.landY = Math.max(40, first ? Math.min(first.y - 30, this.vh * .5) : 90);
     this.mode = "descend";
@@ -373,6 +383,7 @@ export class PageWalk {
         if (!this.next() && !this.finished) this.say("Listening for the next page…");
       }
     }
+    if (this.mode === "walk" || this.mode === "act") this.walls();
     // the camera follows the spider down long pages
     if (this.sheet && (this.mode === "walk" || this.mode === "act")) {
       const max = Math.max(0, this.sheet.offsetHeight - this.vh + 40), want = Math.max(0, Math.min(max, sp.y - this.vh * .45));
