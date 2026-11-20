@@ -793,7 +793,8 @@ async function pollJobs() {
     }
   } catch (e) { /* studio restarting; try again next tick */ }
 }
-setInterval(pollJobs, 2500);
+setInterval(() => { if (!document.hidden) pollJobs(); }, 2500);  // a hidden tab catches up on its next poll
+document.addEventListener("visibilitychange", () => { if (!document.hidden) pollJobs(); });
 
 // ---------------------------------------------------------------- command palette
 const palette = $("#palette"), pInput = $("#paletteInput"), pList = $("#paletteList");

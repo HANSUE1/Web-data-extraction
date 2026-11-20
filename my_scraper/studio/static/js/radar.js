@@ -48,7 +48,12 @@ export function heroNet(canvas) {
   host.addEventListener("pointermove", onMove); host.addEventListener("pointerleave", onLeave);
   const ro = new ResizeObserver(() => size()); ro.observe(canvas);
   size(); raf = requestAnimationFrame(frame);
-  return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  // scrolled out of view: stop drawing, it would burn a frame loop nobody sees
+  const io = new IntersectionObserver(([e]) => {
+    if (!e.isIntersecting) { cancelAnimationFrame(raf); raf = 0; } else if (!raf) raf = requestAnimationFrame(frame);
+  });
+  io.observe(canvas);
+  return () => { cancelAnimationFrame(raf); ro.disconnect(); io.disconnect(); };
 }
 
 // ---------------------------------------------------------------- silk map (live)

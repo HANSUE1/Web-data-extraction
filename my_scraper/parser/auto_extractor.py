@@ -13,6 +13,7 @@ import math
 import re
 import time
 from collections import defaultdict
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -154,8 +155,19 @@ def _leaves(element) -> List[str]:
     return [text for text in map(_clean, element.xpath(VISIBLE_TEXT)) if text]
 
 
+# One page's analysis reads the same elements' text many times over, so it is kept per parse.
+# The tree is never changed while it is read, which is what makes this safe.
+_PARSE_CACHE: ContextVar[Optional[Dict[Any, Any]]] = ContextVar("parse_cache", default=None)
+
+
 def _text(element) -> str:
-    return " ".join(_leaves(element))
+    cache = _PARSE_CACHE.get()
+    if cache is None:
+        return " ".join(_leaves(element))
+    text = cache.get(element)
+    if text is None:
+        text = cache[element] = " ".join(_leaves(element))
+    return text
 
 
 def _compact(item: Item) -> Item:
@@ -540,6 +552,8 @@ def _labelled_pairs(block) -> Optional[Dict[str, str]]:
     """Details written as "Label: value", one to a line, such as "Mileage: 141 828 km"."""
     pairs: Dict[str, str] = {}
     for element in block.iter(*LABEL_HOLDERS):
+        if ":" not in element.text_content():
+            continue  # no label without a colon; this raw-text check is far cheaper than the ones below
         if any(child.tag in BLOCK_TAGS for child in element.iterdescendants()):
             continue  # only the innermost line, so a card's whole text is not one pair
         if _in_stock_badge(element, block):
@@ -562,6 +576,17 @@ def _availability_of(block) -> Optional[str]:
 
 
 def _block_item(block, page_url: str) -> Item:
+    """One item from a block. Scoring and the final list read the same blocks, so it is kept per parse."""
+    cache = _PARSE_CACHE.get()
+    if cache is None:
+        return _read_block(block, page_url)
+    key = ("item", block, page_url)
+    if key not in cache:
+        cache[key] = _read_block(block, page_url)
+    return dict(cache[key])
+
+
+def _read_block(block, page_url: str) -> Item:
     """One item from a block. The dt before a dd holds its link in definition lists."""
     title, link = _title_of(block, page_url)
     text = _text(block)
@@ -786,12 +811,23 @@ def _unique(items: List[Item]) -> List[Item]:
     return kept
 
 
-def list_items(root, page_url: str) -> List[Item]:
-    """Items from the page's main lists or table, or nothing if it is really an article."""
+def _list_analysis(root, page_url: str) -> Tuple[Any, int, List[ScoredGroup]]:
+    """The main area, its text length and its lists. Computed once per parse, as two steps need it."""
+    cache = _PARSE_CACHE.get()
+    key = ("lists", root, page_url)
+    if cache is not None and key in cache:
+        return cache[key]
     area = _main_area(root)
     area_text_length = _content_length(area)
+    found = area, area_text_length, _chosen_groups(area, area_text_length, page_url)
+    if cache is not None:
+        cache[key] = found
+    return found
 
-    groups = _chosen_groups(area, area_text_length, page_url)
+
+def list_items(root, page_url: str) -> List[Item]:
+    """Items from the page's main lists or table, or nothing if it is really an article."""
+    area, area_text_length, groups = _list_analysis(root, page_url)
     table_rows, table_size = _table_items(area, page_url)
     blocks = [block for group in groups for block in group.blocks]
     block_size = sum(group.text_length for group in groups)
@@ -925,8 +961,7 @@ def _is_detail_page(item: Item, root, page_url: str) -> bool:
     if item.get("title", "").strip().lower() in GENERIC_TITLES:
         return False
 
-    area = _main_area(root)
-    groups = _chosen_groups(area, _content_length(area), page_url)
+    area, _, groups = _list_analysis(root, page_url)
     blocks = [block for group in groups for block in group.blocks]
     prose = _prose_length(area, blocks)
     return prose >= DETAIL_PROSE and prose >= DETAIL_PROSE_SHARE * sum(group.text_length for group in groups)
@@ -970,6 +1005,14 @@ def _fill_gaps(trusted: List[Item], visible: List[Item]) -> List[Item]:
 
 
 def _page_items(html: str, page_url: str, include_markdown: bool, errors: List[str]) -> List[Item]:
+    token = _PARSE_CACHE.set({})
+    try:
+        return _read_page(html, page_url, include_markdown, errors)
+    finally:
+        _PARSE_CACHE.reset(token)
+
+
+def _read_page(html: str, page_url: str, include_markdown: bool, errors: List[str]) -> List[Item]:
     root = Selector(text=html[:MAX_HTML_CHARS], type="html").root
     metadata = _attempt(_read_metadata, errors, {}, html, page_url)
     structured = _attempt(structured_items, errors, [], metadata, page_url)
