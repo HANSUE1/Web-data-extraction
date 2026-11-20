@@ -88,6 +88,32 @@ def test_job_requests_are_validated_like_the_cli():
         raise AssertionError(f"accepted {bad}")
     config = config_from_request({"urls": "https://a.test/", "max_pages": 5, "examples": {"title": "Chair"}, "mode": "static"})
     assert config.max_pages == 5 and config.examples == {"title": "Chair"} and config.allowed_domains == ["a.test"]
+    assert config_from_request({"urls": ["https://a.test/"], "fields": ["title", "price", "title"]}).fields == ["title", "price"]
+
+
+def test_picked_fields_are_all_the_export_keeps(site, tmp_path):
+    site.add("/", "Home", links=["/a"])
+    site.add("/a", "Page A")
+
+    async def steps(client):
+        body = {"urls": [site.url + "/"], "mode": "static", "rate_limit": 1000, "max_pages": 5,
+                "selectors": {"title": "h1::text", "links[]": "a::attr(href)"}, "fields": ["title"], "export": ["jsonl"]}
+        job_id = (await (await client.post("/api/jobs", json=body, headers=CHANGE)).json())["id"]
+        for _ in range(200):
+            job = await (await client.get(f"/api/jobs/{job_id}")).json()
+            if job["status"] not in ("queued", "running"):
+                break
+            await asyncio.sleep(0.05)
+        assert job["status"] == "done", job
+        with open(job["summary"]["exports"]["jsonl"], encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f]
+        assert sorted(row["title"] for row in rows) == ["Home", "Page A"] and all(list(row) == ["title"] for row in rows)
+
+    async def go():
+        service = ScrapeService(home=str(tmp_path / "home"), rate_limit=1000, use_browser=False)
+        async with TestClient(TestServer(create_app("outputs/results", service))) as client:
+            await steps(client)
+    asyncio.run(go())
 
 
 def test_a_job_crawls_and_its_run_shows_in_the_library(site, tmp_path):

@@ -55,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Teach by example: a value you can see on the first page. The scraper "
                              "works out the selectors. Repeat for each field of one item. "
                              "Example: --example \"title=A Light in the Attic\" --example \"price=£51.77\"")
+    parser.add_argument("--fields", action="extend", nargs="+", metavar="NAME",
+                        help="Keep only these fields of each item in the export, such as the ones "
+                             "found automatically. Example: --fields title price")
     parser.add_argument("--markdown", action="store_true",
                         help="Add a markdown field with the main content of single-item pages")
     parser.add_argument("--sitemap", action="store_true", help="Also find pages from the site's sitemaps")
@@ -167,6 +170,8 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
         config.item_selector = args.item
     if config.item_selector and not config.selectors:
         parser.error("--item needs at least one --selector to say which fields to take")
+    if args.fields:
+        config.fields = list(dict.fromkeys(name.strip() for name in args.fields if name.strip()))
     if args.markdown:
         config.include_markdown = True
     if args.sitemap:

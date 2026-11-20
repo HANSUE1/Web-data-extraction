@@ -239,7 +239,7 @@ class ProductionCrawler:
         finally:
             self.state.frontier.extend(self._parked)
             self.state.save()
-            self.exports = self.storage.export(self.results)
+            self.exports = self.storage.export(self._picked(self.results))
             for fmt, error in self.storage.errors.items():
                 self.logger.error("export_failed", format=fmt, error=error)
             if self.config.track_changes:
@@ -253,6 +253,14 @@ class ProductionCrawler:
             await self.close()
 
         return self.results
+
+    def _picked(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Only the fields asked for, at export: merging and change tracking still see whole items."""
+        if not self.config.fields:
+            return results
+        picked = [{name: item[name] for name in self.config.fields if item.get(name) not in (None, "", [])}
+                  for item in results]
+        return [item for item in picked if item]  # an item with none of the fields is not one of them
 
     def _track_changes(self, start_urls: List[str]):
         # Examples teach different selectors, so a crawl taught other values is a different crawl.

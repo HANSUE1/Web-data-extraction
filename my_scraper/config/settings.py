@@ -151,6 +151,7 @@ class CrawlConfig:
     selectors: Dict[str, str] = field(default_factory=dict)
     item_selector: Optional[str] = None  # one item per match, selectors relative to it
     examples: Dict[str, str] = field(default_factory=dict)  # values to learn selectors from
+    fields: List[str] = field(default_factory=list)  # export only these item fields; empty keeps all
     include_markdown: bool = False
 
     # Which pages to visit

@@ -28,7 +28,7 @@ NUMBERS = {"max_pages": "--max-pages", "max_depth": "--max-depth", "rate_limit":
 FLAGS = {"sitemap": "--sitemap", "discover": "--discover", "markdown": "--markdown",
          "incremental": "--incremental", "track": "--track", "open_web": "--open-web",
          "no_pagination": "--no-pagination"}
-LISTS = {"include": "--include", "exclude": "--exclude"}
+LISTS = {"include": "--include", "exclude": "--exclude", "fields": "--fields"}
 PAIRS = {"selectors": "--selector", "examples": "--example"}
 MODES = {"auto": [], "browser": ["--use-browser"], "static": ["--no-browser"]}
 ACCEPTED = {"urls", "mode", "export", "item", *NUMBERS, *FLAGS, *LISTS, *PAIRS}

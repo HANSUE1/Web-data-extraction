@@ -179,24 +179,35 @@ VIEWS.overview = async (root, _parts, ctx) => {
 // ---------------------------------------------------------------- extract
 const DEFAULT_FORM = { urls: "", recipe: "auto", max_pages: 50, max_depth: 3, rate_limit: 1, mode: "auto", export: ["jsonl", "csv"],
   sitemap: false, discover: false, pagination: true, markdown: false, track: false, incremental: false, open_web: false,
-  include: "", exclude: "", item: "", examples: [["title", ""], ["price", ""]], selectors: [["title", "h1::text"]] };
+  include: "", exclude: "", fields: [], examples: [["title", ""], ["price", ""]] };
+
+/** The fields a quick look found, most common first, each with a sample value. */
+function fieldsOf(data) {
+  const count = new Map();
+  for (const item of data.items || []) for (const [k, v] of Object.entries(item)) {
+    if (k === "source" || v == null || v === "" || (Array.isArray(v) && !v.length)) continue;
+    const c = count.get(k) || { n: 0, sample: v }; c.n++; count.set(k, c);
+  }
+  if (!count.has("url")) count.set("url", { n: 0, sample: data.final_url || data.url });  // every crawled item carries one
+  return [...count].sort((a, b) => b[1].n - a[1].n).map(([k, c]) => [k, typeof c.sample === "object" ? JSON.stringify(c.sample) : String(c.sample)]);
+}
 
 VIEWS.extract = async (root, _parts, ctx) => {
   crumbs("Seine", "Extract");
   const f = Object.assign(structuredClone(DEFAULT_FORM), store.get("form", {}));
+  if (!["auto", "exact"].includes(f.recipe)) f.recipe = f.recipe === "examples" ? "exact" : "auto";  // forms saved before the two-choice step
   const save = () => { store.set("form", f); renderCmd(); };
 
   const urls = el("textarea", { class: "input", rows: 2, placeholder: "https://example.com/catalogue\nOne address per line — every one is a starting point", value: f.urls,
     oninput: (e) => { f.urls = e.target.value; save(); } });
   const recipeDefs = [
-    ["auto", "sparkles", "Auto-detect", "Finds lists, products, articles and tables by itself."],
-    ["examples", "wand", "Teach by example", "Type values you can see. It learns the selectors."],
-    ["selectors", "code", "CSS selectors", "Exact fields with CSS or XPath, per item."],
-    ["quick", "eye", "Quick look", "One page, nothing saved. See what's there."],
+    ["auto", "sparkles", "Auto-detect", "Finds lists, products, articles and tables by itself, and keeps every field."],
+    ["exact", "wand", "Pick exact fields", "Choose the fields you want from the first page, or show it a value to look for."],
   ];
   const fieldsBox = el("div");
+  let detected = null;  // [name, sample] pairs from the last look at the first page
   const recipes = el("div", { class: "recipes" }, ...recipeDefs.map(([key, ic, title, text]) => el("button", { type: "button", class: "recipe" + (f.recipe === key ? " on" : ""),
-    onclick: (e) => { f.recipe = key; $$(".recipe", recipes).forEach((r) => r.classList.toggle("on", r === e.currentTarget)); renderFields(); renderLaunch(); save(); } },
+    onclick: (e) => { f.recipe = key; $$(".recipe", recipes).forEach((r) => r.classList.toggle("on", r === e.currentTarget)); renderFields(); save(); } },
     icon(ic), el("b", { text: title }), el("small", { text }))));
 
   function pairRows(list, namePh, valuePh) {
@@ -212,15 +223,24 @@ VIEWS.extract = async (root, _parts, ctx) => {
     return box;
   }
   function renderFields() {
-    if (f.recipe === "examples") {
-      fieldsBox.replaceChildren(el("p", { class: "hint", style: "margin:14px 0 0", text: "Copy one item's values exactly as they appear on the first page. Example: title = A Light in the Attic, price = £51.77." }),
-        pairRows(f.examples, "field name", "value you can see on the page"));
-    } else if (f.recipe === "selectors") {
-      fieldsBox.replaceChildren(
-        el("label", { class: "field", style: "margin-top:14px" }, el("span", { text: "Item selector (optional) — one record per match" }),
-          el("input", { class: "input", value: f.item, placeholder: ".product_pod", oninput: (e) => { f.item = e.target.value; save(); } })),
-        pairRows(f.selectors, "field name", "h3 a::attr(title)  or  //span[@class='price']/text()"));
-    } else fieldsBox.replaceChildren();
+    if (f.recipe !== "exact") { fieldsBox.replaceChildren(); return; }
+    const findBtn = el("button", { class: "btn small", type: "button" }, icon("eye"), detected ? "Read it again" : "Find fields on the first page");
+    findBtn.addEventListener("click", () => quickLook(findBtn));
+    const names = [...new Set([...(detected || []).map(([name]) => name), ...f.fields])];
+    const chips = el("div", { class: "chips" }, ...names.map((name) => {
+      const sample = detected?.find(([n]) => n === name)?.[1];
+      const on = () => f.fields.includes(name);
+      return el("button", { type: "button", class: "chip" + (on() ? " on" : ""), "aria-pressed": String(on()), title: sample || null,
+        onclick: (e) => { f.fields = on() ? f.fields.filter((x) => x !== name) : [...f.fields, name]; e.currentTarget.classList.toggle("on", on()); e.currentTarget.setAttribute("aria-pressed", String(on())); save(); } },
+        name, sample ? el("small", { text: sample }) : null);
+    }));
+    const taught = f.examples.some(([k, v]) => k.trim() && v.trim());
+    fieldsBox.replaceChildren(
+      el("div", { class: "pick-head" }, el("p", { class: "hint", text: names.length ? "Tick the fields you want. Only these are kept." : "Reads the first page and lists every field it can take, with a sample of each." }), findBtn),
+      names.length ? chips : "",
+      el("details", { class: "more", open: taught }, el("summary", { text: "A field isn't listed? Show it a value" }),
+        el("p", { class: "hint", style: "margin:10px 0 0", text: "Type one item's values exactly as the first page shows them, such as title = A Light in the Attic, price = £51.77. It learns where they live. Taught fields replace the picks above: the crawl takes exactly these." }),
+        pairRows(f.examples, "field name", "value you can see on the page")));
   }
 
   const slider = (key, label, min, max, stepV, fmt = (v) => v) => {
@@ -270,8 +290,11 @@ VIEWS.extract = async (root, _parts, ctx) => {
     const p = { urls: list(f.urls), max_pages: f.max_pages, max_depth: f.max_depth, rate_limit: f.rate_limit, mode: f.mode, export: f.export,
       sitemap: f.sitemap, discover: f.discover, markdown: f.markdown, track: f.track, incremental: f.incremental, open_web: f.open_web,
       no_pagination: !f.pagination, include: list(f.include), exclude: list(f.exclude) };
-    if (f.recipe === "examples") p.examples = pairs(f.examples);
-    if (f.recipe === "selectors") { p.selectors = pairs(f.selectors); if (f.item.trim()) p.item = f.item.trim(); }
+    if (f.recipe === "exact") {
+      const taught = pairs(f.examples);
+      if (Object.keys(taught).length) p.examples = taught;
+      else if (f.fields.length) p.fields = f.fields;
+    }
     return p;
   }
   function renderCmd() {
@@ -283,42 +306,42 @@ VIEWS.extract = async (root, _parts, ctx) => {
     if (p.mode === "browser") parts.push(["--use-browser", null]); if (p.mode === "static") parts.push(["--no-browser", null]);
     for (const k of ["sitemap", "discover", "markdown", "track", "incremental", "open_web", "no_pagination"]) if (p[k]) parts.push(["--" + k.replace("_", "-"), null]);
     for (const x of p.include) parts.push(["--include", q(x)]); for (const x of p.exclude) parts.push(["--exclude", q(x)]);
-    if (p.item) parts.push(["--item", q(p.item)]);
-    for (const [k, v] of Object.entries(p.selectors || {})) parts.push(["--selector", q(`${k}=${v}`)]);
+    if (p.fields) parts.push(["--fields", p.fields.map(q).join(" ")]);
     for (const [k, v] of Object.entries(p.examples || {})) parts.push(["--example", q(`${k}=${v}`)]);
     parts.push(["--export", p.export.join(" ")]);
     cmd.replaceChildren(...parts.flatMap(([k, v], i) => [i ? " " : "", el("span", { class: i ? "k" : "", text: k }), v != null ? " " : "", v != null ? el("span", { class: "v", text: String(v) }) : ""]));
   }
   renderCmd();
 
-  const launchBtn = el("button", { class: "btn primary launch" });
+  const launchBtn = el("button", { class: "btn primary launch" }, icon("bolt"), "Cast the net");
   const lookBtn = el("button", { class: "btn", style: "width:100%" }, icon("eye"), "Quick look at the first page");
   const previewBox = el("div");
-  function renderLaunch() {
-    launchBtn.replaceChildren(...(f.recipe === "quick" ? [icon("eye"), "Look now"] : [icon("bolt"), "Cast the net"]));
-    lookBtn.hidden = f.recipe === "quick";
-  }
-  renderLaunch();
 
-  async function quickLook() {
+  async function quickLook(btn = lookBtn) {
     const first = payload().urls[0];
     if (!first) { urls.focus(); toast("Add an address first", true); return; }
-    lookBtn.classList.add("busy"); launchBtn.disabled = true;
+    btn.classList.add("busy"); btn.disabled = launchBtn.disabled = true;
     previewBox.replaceChildren(el("div", { class: "card skeleton preview", style: "height:260px" }));
     try {
       const data = await api("/v1/scrape", { method: "POST", body: { url: first, render: f.mode === "static" ? "never" : f.mode === "browser" ? "always" : "auto", max_chars: 40000 } });
       if (!ctx.alive()) return;
+      detected = fieldsOf(data);
+      renderFields();
       previewBox.replaceChildren(previewCard(data));
-      previewBox.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
+      if (btn === lookBtn) previewBox.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "start" });
     } catch (err) {
       previewBox.replaceChildren(el("div", { class: "done-banner bad preview" }, el("h3", { text: "Couldn't look" }), el("span", { text: err.message })));
-    } finally { lookBtn.classList.remove("busy"); launchBtn.disabled = false; }
+    } finally { btn.classList.remove("busy"); btn.disabled = launchBtn.disabled = false; }
   }
-  lookBtn.addEventListener("click", quickLook);
+  lookBtn.addEventListener("click", () => quickLook());
   launchBtn.addEventListener("click", async () => {
-    if (f.recipe === "quick") return quickLook();
     const p = payload();
     if (!p.urls.length) { urls.focus(); toast("Add at least one address", true); return; }
+    if (f.recipe === "exact" && !p.fields && !p.examples) {
+      toast("Pick at least one field, or show it a value", true);
+      if (!detected) quickLook($(".pick-head .btn", fieldsBox));
+      return;
+    }
     launchBtn.classList.add("busy");
     try {
       const job = await api("/api/jobs", { method: "POST", body: p });
