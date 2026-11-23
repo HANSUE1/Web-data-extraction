@@ -20,5 +20,8 @@ mcp>=2.3.0                  # service.mcp_server, for AI assistants
 # Development
 pytest>=8.0.0
 
+# Only for examples/books_scrapy
+scrapy>=2.19.0
+
 # Only for the standalone scrape.py
 requests>=2.31.0

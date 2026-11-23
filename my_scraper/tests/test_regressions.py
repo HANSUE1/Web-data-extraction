@@ -105,6 +105,24 @@ def test_a_redirect_into_a_disallowed_path_is_not_kept(site, make_config):
     assert crawler.compliance.status_counts["robots_disallowed"] == 1
 
 
+def test_identical_pages_read_at_the_same_time_are_stored_once(site, make_config):
+    site.add("/", "Home", links=["/copy1", "/copy2"])
+    for path in ("/copy1", "/copy2"):
+        site.add_raw(path, html_page("same page"), "text/html")
+    crawler = ProductionCrawler(make_config())
+    best_view = crawler._best_view
+
+    async def slow_view(url, fetch_result):
+        await asyncio.sleep(0.3)  # long enough for the other copy to arrive
+        return await best_view(url, fetch_result)
+
+    crawler._best_view = slow_view
+    asyncio.run(crawler.crawl())
+
+    assert sorted(item["title"] for item in crawler.results) == ["Home", "same page"]
+    assert crawler.compliance.status_counts["duplicate_content"] == 1
+
+
 def test_a_malformed_base_href_costs_neither_the_page_nor_its_links(site, make_config):
     site.add_raw("/", '<base href="http://[bad/">' + html_page("Home", ["/a"]), "text/html")
     site.add("/a", "A")

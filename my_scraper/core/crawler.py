@@ -639,6 +639,7 @@ class ProductionCrawler:
             self.compliance.log_scrape_event(url, "duplicate_content")
             return
         else:
+            self._content_hashes.add(digest)  # before parsing, or a copy arriving meanwhile is stored too
             first_view = fetch_result
             fetch_result, page = await self._best_view(url, fetch_result)
             new_items = self._store(url, page)

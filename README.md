@@ -49,6 +49,10 @@ python -m my_scraper.cli.main --urls https://books.toscrape.com/ --resume
 # Worked example: 50 products from books.toscrape.com
 python examples/books_toscrape.py
 
+# The same site with Scrapy instead, for comparison: all 1000 books into outputs/results/books_scrapy/books.db
+pip install scrapy
+cd examples/books_scrapy && scrapy crawl books
+
 # Run the tests (no network needed)
 python -m pytest my_scraper/tests
 
@@ -265,7 +269,8 @@ Web-data-extraction/
 ├── requirements.txt
 ├── scrape.py               # standalone one-page script, separate from the scraper below
 ├── examples/
-│   └── books_toscrape.py   # worked example: a hand-written scraper built on the crawler
+│   ├── books_toscrape.py   # worked example: a hand-written scraper built on the crawler
+│   └── books_scrapy/       # the same site as a Scrapy project, independent of the scraper below
 ├── outputs/                # everything the scraper writes (see Quick Start), not in git
 └── my_scraper/
     ├── cli/                # command line: main.py, and explain.py for --explain
