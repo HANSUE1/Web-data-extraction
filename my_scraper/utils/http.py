@@ -1,10 +1,12 @@
 """HTTP session setup shared by everything that talks to the network."""
 import ssl
 from functools import lru_cache
-from typing import Dict, Optional
+from http.cookies import CookieError, Morsel
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 import certifi
+from yarl import URL
 
 # What any ordinary client sends. Some servers refuse requests that leave these out.
 DEFAULT_HEADERS = {
@@ -24,13 +26,32 @@ def ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=certifi.where())
 
 
+def login_cookie_jar(cookies: List[Dict[str, Any]]) -> aiohttp.CookieJar:
+    """A jar holding browser cookies, each sent only to the site that set it, as the browser would."""
+    jar = aiohttp.CookieJar(unsafe=True, quote_cookie=False)  # unsafe: also for sites addressed by IP
+    for cookie in cookies:
+        host, path = cookie["domain"].lstrip("."), cookie.get("path") or "/"
+        morsel: Morsel = Morsel()
+        try:
+            morsel.set(cookie["name"], cookie["value"], cookie["value"])
+        except CookieError:
+            continue  # a name no server should send
+        morsel["path"] = path
+        if cookie["domain"].startswith("."):  # with the dot it covers subdomains, without it only this host
+            morsel["domain"] = host
+        if cookie.get("secure"):
+            morsel["secure"] = True
+        jar.update_cookies({cookie["name"]: morsel}, URL.build(scheme="https", host=host, path=path))
+    return jar
+
+
 def create_session(headers: Optional[Dict[str, str]] = None,
                    timeout: Optional[aiohttp.ClientTimeout] = None,
-                   cookies: Optional[Dict[str, str]] = None) -> aiohttp.ClientSession:
+                   cookies: Optional[List[Dict[str, Any]]] = None) -> aiohttp.ClientSession:
     connector = aiohttp.TCPConnector(ssl=ssl_context())
     options = {"timeout": timeout} if timeout else {}
     if cookies:
-        options["cookies"] = cookies  # session cookies from --login, sent with every request
+        options["cookie_jar"] = login_cookie_jar(cookies)  # from --login
     # trust_env honours HTTP_PROXY and friends, which company networks often require.
     # Some sites send a Content-Security-Policy header far over aiohttp's 8 KB default; browsers accept it.
     return aiohttp.ClientSession(connector=connector, headers={**DEFAULT_HEADERS, **(headers or {})},

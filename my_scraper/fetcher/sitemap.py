@@ -55,7 +55,10 @@ async def discover_urls(sitemaps: List[str], fetch_body: Callable[[str], Awaitab
         if body is None:
             continue
 
-        pages, children = parse_sitemap(body)
+        try:
+            pages, children = parse_sitemap(body)
+        except (zlib.error, etree.LxmlError, ValueError):
+            continue  # one damaged sitemap must not cost the others
         found.extend(page for page in pages if accept(page))
         queue.extend((child, level + 1) for child in children)
 

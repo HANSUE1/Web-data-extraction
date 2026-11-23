@@ -2,6 +2,7 @@
 import re
 from collections import Counter
 from datetime import date
+from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from w3lib.url import canonicalize_url
@@ -50,6 +51,14 @@ def join_url(base: str, href: str) -> str:
     return joined
 
 
+def safe_join(base: str, href: str) -> Optional[str]:
+    """join_url for links written by strangers: None for one that cannot be parsed."""
+    try:
+        return join_url(base, href.strip())
+    except ValueError:
+        return None
+
+
 def normalize_url(url: str) -> str:
     """Reduce URL variants to one form: no tracking or session id, sorted query, lowercase host.
 
@@ -60,9 +69,11 @@ def normalize_url(url: str) -> str:
     route = fragment if fragment.startswith(("/", "!")) else ""
 
     parts = urlsplit(PATH_SESSION.sub("", url))
-    kept = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+    # surrogateescape carries bytes that are not UTF-8 through unchanged, as older sites use other encodings
+    kept = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True, errors="surrogateescape")
             if key.lower() not in THROWAWAY_PARAMS]
-    parts = urlsplit(canonicalize_url(parts._replace(query=urlencode(kept)).geturl()))
+    query = urlencode(kept, errors="surrogateescape")
+    parts = urlsplit(canonicalize_url(parts._replace(query=query).geturl()))
 
     netloc = parts.netloc
     if parts.port == DEFAULT_PORTS.get(parts.scheme):

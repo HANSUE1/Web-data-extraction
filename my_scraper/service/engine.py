@@ -156,6 +156,13 @@ def map_fields(item: Dict[str, Any], fields: List[str]) -> Tuple[Dict[str, Any],
     return values, keys
 
 
+def _whole_number(name: str, value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ServiceError("invalid_request", f"{name} must be a whole number, got {value!r}") from None
+
+
 def _truncate(text: Optional[str], limit: int) -> Tuple[str, bool]:
     text = text or ""
     if limit and len(text) > limit:
@@ -253,7 +260,7 @@ class ScrapeService:
         try:
             return normalize_url(url.strip())
         except ValueError as e:
-            raise ServiceError("invalid_url", f"Could not read URL {url!r}: {e}")
+            raise ServiceError("invalid_url", f"Could not read URL {url!r}: {e}") from e
 
     @staticmethod
     def _refusal(crawler: _ServiceCrawler, url: str) -> ServiceError:
@@ -266,7 +273,7 @@ class ScrapeService:
         try:
             result = await crawler.fetch_page(url, render=render == "always")
         except Exception as e:
-            raise ServiceError("failed", f"The page could not be fetched: {str(e) or repr(e)}", 502)
+            raise ServiceError("failed", f"The page could not be fetched: {str(e) or repr(e)}", 502) from e
         if result is None:
             raise self._refusal(crawler, url)
 
@@ -349,16 +356,17 @@ class ScrapeService:
                     max_chars_per_page: int = 8000, timeout: float = DEFAULT_TIMEOUT) -> Dict[str, Any]:
         """Crawl one site and return every page as Markdown, plus the items found."""
         url = self._check(url, render)
-        max_pages = max(1, min(int(max_pages), MAX_CRAWL_PAGES))
+        max_pages = max(1, min(_whole_number("max_pages", max_pages), MAX_CRAWL_PAGES))
+        max_depth = max(0, _whole_number("max_depth", max_depth))
         for pattern in (include or []) + (exclude or []):
             try:
                 re.compile(pattern)
             except re.error as e:
-                raise ServiceError("invalid_pattern", f"Invalid pattern {pattern!r}: {e}")
+                raise ServiceError("invalid_pattern", f"Invalid pattern {pattern!r}: {e}") from e
 
         with self._job() as job:
             crawler = self._crawler(job, [url], render, allowed_domains=[urlparse(url).netloc],
-                                    max_pages=max_pages, max_depth=max(0, int(max_depth)),
+                                    max_pages=max_pages, max_depth=max_depth,
                                     include_patterns=include or [], exclude_patterns=exclude or [],
                                     use_sitemap=use_sitemap)
             timed_out = False
@@ -416,7 +424,7 @@ class ScrapeService:
                        use_sitemap: bool = True) -> Dict[str, Any]:
         """The pages a site has: from its sitemaps and the links on the given page."""
         url = self._check(url)
-        limit = max(1, min(int(limit), MAX_MAP_URLS))
+        limit = max(1, min(_whole_number("limit", limit), MAX_MAP_URLS))
         with self._job() as job:
             crawler = self._crawler(job, [url], "never", allowed_domains=[urlparse(url).netloc],
                                     max_pages=MAX_MAP_URLS, max_depth=1)
@@ -459,6 +467,8 @@ class ScrapeService:
         found are listed, with the page's Markdown so the caller can read them itself.
         """
         url = self._check(url, render)
+        if isinstance(fields, str):
+            fields = fields.split(",")
         fields = [field.strip() for field in fields if isinstance(field, str) and field.strip()]
         if not fields:
             raise ServiceError("no_fields", "Name at least one field to extract.")

@@ -286,7 +286,7 @@ def test_cli_passes_ordinary_patterns_quietly(capsys):
 def test_static_fetcher_sends_login_cookies(site):
     site.add("/gated", "gated")
     fetcher = StaticFetcher()
-    fetcher.cookies = {"wss-logged-in": "1"}
+    fetcher.cookies = [{"name": "wss-logged-in", "value": "1", "domain": "127.0.0.1", "path": "/"}]
 
     async def go():
         try:

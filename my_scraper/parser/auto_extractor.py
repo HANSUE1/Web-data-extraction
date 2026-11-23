@@ -25,7 +25,7 @@ from parsel import Selector
 
 from my_scraper.parser.documents import unique_headers
 from my_scraper.parser.embedded_state import embedded_items, records_to_items
-from my_scraper.utils.urls import join_url
+from my_scraper.utils.urls import safe_join
 
 Item = Dict[str, Any]
 
@@ -180,12 +180,7 @@ def _has_letters(text: str) -> bool:
 
 
 def _url(value: Optional[str], page_url: str) -> Optional[str]:
-    if not value:
-        return None
-    try:
-        return join_url(page_url, value.strip())
-    except ValueError:
-        return None
+    return safe_join(page_url, value) if value else None
 
 
 # --- 1. Structured data ------------------------------------------------------
@@ -800,7 +795,7 @@ def _prose_length(root, excluded: List[Any]) -> int:
     return total
 
 
-def _unique(items: List[Item]) -> List[Item]:
+def unique_items(items: List[Item]) -> List[Item]:
     seen = set()
     kept = []
     for item in items:
@@ -858,7 +853,7 @@ def list_items(root, page_url: str) -> List[Item]:
         if not item.get("url") or key not in seen:
             seen.add(key)
             items.append(item)
-    return _unique(items)
+    return unique_items(items)
 
 
 # --- 3. Single document ------------------------------------------------------
@@ -1062,7 +1057,7 @@ def extract_items(html: str, page_url: str, include_markdown: bool = False, snap
         more = [item for item in _page_items(snapshot, page_url, False, errors) if item.get("source") != "document"]
         if more:
             items = items + more if len(items) > 1 else more
-    items = _unique(items)
+    items = unique_items(items)
 
     # API responses are rarely the whole story, so they only step in for a page that showed
     # nothing, or one with tabs where the page caught less of the data than the API sent.

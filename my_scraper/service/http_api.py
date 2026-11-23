@@ -12,6 +12,7 @@ import argparse
 import hmac
 import inspect
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -54,8 +55,22 @@ def _endpoint(service: ScrapeService, name: str):
     return handle
 
 
+def _finite(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _finite(entry) for key, entry in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(entry) for entry in value]
+    return value
+
+
 def _dumps(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False, default=str)
+    """JSON that any client can read: Python would write NaN and Infinity, which are not JSON."""
+    try:
+        return json.dumps(data, ensure_ascii=False, default=str, allow_nan=False)
+    except ValueError:
+        return json.dumps(_finite(data), ensure_ascii=False, default=str)
 
 
 def _error(status: int, code: str, message: str) -> web.Response:
@@ -69,7 +84,8 @@ def create_app(service: Optional[ScrapeService] = None, api_key: Optional[str] =
     async def require_key(request: web.Request, handler):
         if api_key and request.path != "/health":
             supplied = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-            if not hmac.compare_digest(supplied, api_key):
+            # As bytes: compare_digest refuses text that is not ASCII, and the header can hold anything.
+            if not hmac.compare_digest(supplied.encode("utf-8", "surrogateescape"), api_key.encode("utf-8")):
                 return _error(401, "unauthorized", "Send Authorization: Bearer <api key>.")
         return await handler(request)
 

@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from parsel import Selector
 
-from my_scraper.utils.urls import join_url
+from my_scraper.utils.urls import safe_join
 
 NEXT_LABELS = {
     "next", "next page", "next »", "next ›", "next >", "older", "older posts", "older entries", "›", "»", ">", "→",
@@ -38,7 +38,7 @@ def _is_hidden_link(element) -> bool:
 def base_url_of(sel: Selector, page_url: str) -> str:
     """The address relative links resolve against, which <base href> can change."""
     base = sel.xpath("//base/@href").get()
-    return join_url(page_url, base) if base else page_url
+    return (safe_join(page_url, base) if base else None) or page_url
 
 
 def forbids_following(sel: Selector) -> bool:

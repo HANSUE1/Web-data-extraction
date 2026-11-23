@@ -22,6 +22,10 @@ class NotFound(Exception):
     pass
 
 
+class Unreadable(Exception):
+    """A results file that exists but is damaged, or is not what its name says."""
+
+
 class Library:
     """Reads the results folder. Every path from a request goes through `resolve`."""
 
@@ -57,14 +61,19 @@ class Library:
 
         runs = []
         for folder, files in folders.items():
-            entries = [self._file_entry(path) for path in sorted(files)]
+            try:
+                entries = [self._file_entry(path) for path in sorted(files)]
+            except FileNotFoundError:
+                continue  # deleted while being listed
             modified = max(entry["modified"] for entry in entries)
+            site, created = folder.name, modified
             match = RUN_NAME.match(folder.name)
             if match:
-                site = match["site"]
-                created = datetime.strptime(match["stamp"], "%Y%m%d_%H%M%S").timestamp()
-            else:
-                site, created = folder.name, modified
+                try:
+                    created = datetime.strptime(match["stamp"], "%Y%m%d_%H%M%S").timestamp()
+                    site = match["site"]
+                except ValueError:
+                    pass  # digits that are no date: someone else's folder name
             runs.append({
                 "id": self._relative(folder) if folder != self.root else "",
                 "name": folder.name if folder != self.root else "(results)",
@@ -157,7 +166,11 @@ class Library:
             return {"kind": "text", "format": fmt, "text": text[:MAX_TEXT_CHARS],
                     "truncated": len(text) > MAX_TEXT_CHARS}
 
-        rows = self.rows(path)
+        try:
+            rows = self.rows(path)
+        except (ValueError, csv.Error, sqlite3.Error) as e:
+            raise Unreadable(f"{path.name} could not be read: {e}") from e
+        total = len(rows)
         columns = _columns(rows)
         if query:
             needle = query.lower()
@@ -168,7 +181,7 @@ class Library:
             rows = sorted(present, key=lambda row: _sort_key(row.get(sort)), reverse=descending) + missing
         offset = max(0, offset)
         limit = max(1, min(limit, 1000))
-        return {"kind": "table", "format": fmt, "columns": columns, "total": len(self.rows(path)),
+        return {"kind": "table", "format": fmt, "columns": columns, "total": total,
                 "matched": len(rows), "offset": offset, "rows": rows[offset:offset + limit]}
 
 
@@ -227,6 +240,6 @@ def _read_rows(path: Path) -> List[Dict[str, Any]]:
         table = max(sizes, key=sizes.get)
         cursor = connection.execute(f'SELECT * FROM "{table}"')
         names = [column[0] for column in cursor.description]
-        return [dict(zip(names, row)) for row in cursor]
+        return [dict(zip(names, row, strict=True)) for row in cursor]
     finally:
         connection.close()

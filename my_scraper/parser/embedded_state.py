@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from parsel import Selector
 
-from my_scraper.utils.urls import join_url
+from my_scraper.utils.urls import safe_join
 
 Item = Dict[str, Any]
 
@@ -44,7 +44,9 @@ JSON_ATTRIBUTE = "//@*[starts-with(normalize-space(.), '{\"') or starts-with(nor
 
 MARKUP = re.compile(r"<[^>]+>")
 
-_DECODER = json.JSONDecoder()
+# NaN and Infinity are not JSON, and would make every export and answer holding one unreadable.
+_DECODER = json.JSONDecoder(parse_constant=lambda name: None)
+decode_json = _DECODER.decode
 
 
 def _decode_js_string(literal: str) -> Optional[str]:
@@ -58,7 +60,7 @@ def _decode_js_string(literal: str) -> Optional[str]:
 
 def _parse(text: str) -> Optional[Any]:
     try:
-        return json.loads(text)
+        return decode_json(text)
     except ValueError:
         return None
 
@@ -172,7 +174,7 @@ def _first(record: Dict[str, Any], keys: tuple) -> Optional[str]:
 
 def _web_address(value: Optional[str], page_url: str) -> Optional[str]:
     if value and (value.startswith(("http://", "https://", "//", "/"))):
-        return join_url(page_url, value)
+        return safe_join(page_url, value)
     return None
 
 
@@ -239,6 +241,20 @@ def records_to_items(values: Any, page_url: str, source: str) -> List[Item]:
     best = max(by_shape.values(), key=_score)
     unique = {json.dumps(record, sort_keys=True, default=str): record for record in best}
     return [_normalize(record, page_url, source) for record in unique.values()]
+
+
+def platform_items(data: Any, page_url: str) -> List[Item]:
+    """Every record of a known platform API: a list, or one list in a wrapper ({"products": [...]}).
+
+    What is a record is known here, so there is no guessing: a guess takes the sizes of each
+    product for the products, and the last page's one or two records for nothing at all.
+    """
+    records = data
+    if isinstance(data, dict) and len(data) == 1:
+        records = next(iter(data.values()))
+    if not isinstance(records, list):
+        return records_to_items([data], page_url, "api")
+    return [_normalize(record, page_url, "api") for record in records if isinstance(record, dict)]
 
 
 def embedded_items(html: str, page_url: str) -> List[Item]:

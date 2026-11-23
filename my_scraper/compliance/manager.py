@@ -21,7 +21,7 @@ READ_STATUSES = {"success", "no_data_extracted", "unchanged"}
 
 PII_FIELD_KEYWORDS = ("email", "phone", "ssn", "social_security", "address", "zip", "postal", "dob", "birth")
 PII_VALUE_PATTERNS = (
-    re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),                        # email
+    re.compile(r"[\w.+-]@[\w-]+\.[\w.-]"),  # email; no + before the @, or long unbroken text takes minutes
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),                           # US SSN
     re.compile(r"\+\d{1,3}[\s.-]?\(?\d{1,4}\)?(?:[\s.-]?\d{2,4}){2,4}"),  # international phone
     re.compile(r"(?<!\d)\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)"),  # US phone
@@ -50,7 +50,7 @@ class ComplianceManager:
     def _load_blocklist(self) -> Set[str]:
         if not self.blocklist_file.exists():
             return set()
-        lines = self.blocklist_file.read_text(encoding="utf-8").splitlines()
+        lines = self.blocklist_file.read_text(encoding="utf-8-sig").splitlines()  # Notepad adds a BOM
         return {line.strip().lower() for line in lines if line.strip()}
 
     def _is_blocked_domain(self, host: str) -> bool:

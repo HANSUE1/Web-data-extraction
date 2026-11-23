@@ -18,7 +18,7 @@ from my_scraper.cli.explain import explain  # noqa: E402
 from my_scraper.config.settings import CrawlConfig, ExportFormat, FetcherType  # noqa: E402
 from my_scraper.core.crawler import ProductionCrawler  # noqa: E402
 from my_scraper.storage.changes import describe  # noqa: E402
-
+from my_scraper.utils.urls import normalize_url  # noqa: E402
 
 OPEN_WEB_PAGES_PER_SITE = 50
 
@@ -102,12 +102,20 @@ def domains_of(urls: List[str]) -> List[str]:
     return sorted({urlparse(url).netloc for url in urls})
 
 
+def _is_web_address(url: str) -> bool:
+    try:
+        parts = urlparse(normalize_url(url))
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
 def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> CrawlConfig:
     """Load the config file, if any, then apply command line overrides."""
     config = CrawlConfig()
     if args.config:
         try:
-            with open(args.config, "r", encoding="utf-8") as f:
+            with open(args.config, "r", encoding="utf-8-sig") as f:  # Notepad and PowerShell add a BOM
                 config = CrawlConfig.from_dict(json.load(f))
         except (OSError, ValueError, TypeError) as e:
             parser.error(f"could not load config {args.config}: {e}")
@@ -116,6 +124,9 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
         config.open_web = True
     if args.urls:
         config.start_urls = args.urls
+    for url in config.start_urls:
+        if not _is_web_address(url):
+            parser.error(f"start URL must begin with http:// or https:// and name a site: {url}")
     if config.open_web:
         config.allowed_domains = []
         if config.max_pages_per_site is None:
@@ -125,9 +136,6 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
     elif not config.allowed_domains:
         config.allowed_domains = domains_of(config.start_urls)
 
-    for url in config.start_urls:
-        if urlparse(url).scheme not in ("http", "https"):
-            parser.error(f"start URL must begin with http:// or https://: {url}")
     if not config.start_urls:
         parser.error("no start URLs: pass --urls, or set start_urls in --config")
 
@@ -207,7 +215,7 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
 def print_summary(crawler: ProductionCrawler, heading: str):
     visited = crawler.state.visited
     where = f" on {len({urlparse(url).netloc for url in visited})} sites" if crawler.config.open_web else ""
-    print(f"\n{heading} Extracted {len(crawler.results)} items from {len(visited)} pages{where}.")
+    print(f"\n{heading} Extracted {len(crawler.results)} items from {crawler.state.page_count} pages{where}.")
     if crawler.config.open_web and crawler.state.frontier:
         print(f"  {len(crawler.state.frontier)} pages on {crawler.state.frontier.site_count} sites "
               "still queued: --resume continues")
@@ -216,7 +224,8 @@ def print_summary(crawler: ProductionCrawler, heading: str):
         reason = compliance.first_errors.get(status)
         print(f"  {status}: {count}" + (f" (first: {reason[:150]})" if reason else ""))
     for fmt, path in crawler.exports.items():
-        print(f"  {fmt}: {path or 'nothing to export'}")
+        if fmt not in crawler.storage.errors:
+            print(f"  {fmt}: {path or 'nothing to export'}")
     for fmt, error in crawler.storage.errors.items():
         print(f"  {fmt} export failed: {error}")
     if not crawler.results:
@@ -242,7 +251,11 @@ def main(argv: Optional[List[str]] = None):
 
     if args.explain:
         config.logging.console = False
-        asyncio.run(explain(config))
+        try:
+            asyncio.run(explain(config))
+        except Exception as e:
+            print(f"Error: {str(e) or repr(e)}", file=sys.stderr)
+            sys.exit(1)
         return
 
     try:
@@ -257,7 +270,7 @@ def main(argv: Optional[List[str]] = None):
     except KeyboardInterrupt:
         print_summary(crawler, "Crawling interrupted, partial results saved. Continue with --resume.")
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"Error: {str(e) or repr(e)}", file=sys.stderr)
         sys.exit(1)
 
 

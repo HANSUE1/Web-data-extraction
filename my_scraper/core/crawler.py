@@ -60,6 +60,11 @@ def site_of(url: str) -> str:
     return site_key(urlparse(url).netloc)
 
 
+def filled(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The items that hold any data at all."""
+    return [item for item in items if any(value not in (None, "", []) for value in item.values())]
+
+
 class CrawlState:
     """Persist crawl state for checkpointing."""
 
@@ -68,9 +73,15 @@ class CrawlState:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         self.items_file = self.state_file.with_name(f"{self.state_file.stem}_items.jsonl")
         self.visited: Set[str] = set()
+        self.redirects: Set[str] = set()  # visited only as the target of a redirect, not a page of their own
         self.frontier = SiteFrontier(site_of)
         self.extracted_count = 0
         self.start_time: Optional[float] = None
+
+    @property
+    def page_count(self) -> int:
+        """Pages requested. A page and the address it redirects to are one page."""
+        return len(self.visited) - len(self.redirects)
 
     def save(self, in_flight: Iterable[QueuedUrl] = ()):
         """Save state to disk. URLs still in flight are stored as not yet done."""
@@ -78,6 +89,7 @@ class CrawlState:
         busy = {url for url, _ in in_flight}
         snapshot = {
             "visited": sorted(self.visited - busy),
+            "redirects": sorted(self.redirects),
             "frontier": in_flight + list(self.frontier),
             "extracted_count": self.extracted_count,
             "start_time": self.start_time,
@@ -93,6 +105,7 @@ class CrawlState:
         try:
             snapshot = json.loads(self.state_file.read_text(encoding="utf-8"))
             self.visited = set(snapshot["visited"])
+            self.redirects = self.visited & set(snapshot.get("redirects", ()))  # older checkpoints have none
             self.frontier = SiteFrontier(site_of, ((url, depth) for url, depth in snapshot["frontier"]))
             self.extracted_count = snapshot["extracted_count"]
             self.start_time = snapshot["start_time"]
@@ -113,25 +126,31 @@ class CrawlState:
         """Items from pages the checkpoint counts as finished.
 
         Any other page is fetched again on resume, so keeping its items would
-        duplicate them. A line cut short by a crash is skipped.
+        duplicate them. A line cut short by a crash is skipped. Both are also taken
+        out of the file: the next resume would count them, and the next item would
+        be written onto the end of the cut line.
         """
-        items = []
+        records = []
         if self.items_file.exists():
-            for line in self.items_file.read_text(encoding="utf-8").splitlines():
+            # Not splitlines(), which also breaks on characters JSON leaves unescaped, such as U+2028.
+            for line in self.items_file.read_text(encoding="utf-8", errors="replace").split("\n"):
                 try:
                     record = json.loads(line)
                 except ValueError:
                     continue
                 if record["page"] in self.visited:
-                    items.append(record["item"])
-        return items
+                    records.append(record)
+            temp_file = self.items_file.with_suffix(".tmp")
+            temp_file.write_text("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+                                 encoding="utf-8")
+            os.replace(temp_file, self.items_file)
+        return [record["item"] for record in records]
 
 
 def page_strength(page: ParsedPage) -> float:
     """How much a parsed page holds, for comparing a static copy with a rendered one."""
-    filled = sum(1 for item in page.items if any(value not in (None, "", []) for value in item.values()))
     longest_text = max((len(str(item.get("text", ""))) for item in page.items), default=0)
-    return filled + min(longest_text / 1000, 3.0)
+    return len(filled(page.items)) + min(longest_text / 1000, 3.0)
 
 
 class ProductionCrawler:
@@ -211,7 +230,7 @@ class ProductionCrawler:
         started = time.time()
         if resume and self.state.load():
             self._queued = {url for url, _ in self.state.frontier}
-            self._site_pages = Counter(site_of(url) for url in self.state.visited)
+            self._site_pages = Counter(site_of(url) for url in self.state.visited - self.state.redirects)
             for item in self.state.load_items():
                 self._add_result(item)
             self.logger.info("crawl_resumed", visited=len(self.state.visited), queued=len(self._queued),
@@ -246,7 +265,7 @@ class ProductionCrawler:
                 self._track_changes(start_urls)
             self.logger.info("crawl_completed",
                              total_items=len(self.results),
-                             pages_visited=len(self.state.visited),
+                             pages_visited=self.state.page_count,
                              duration_seconds=round(time.time() - started, 2),
                              exports=self.exports)
             self.logger.info("compliance_report", **self.compliance.generate_compliance_report())
@@ -284,8 +303,18 @@ class ProductionCrawler:
     async def _seed_from_sitemaps(self, start_urls: List[str]):
         """Add the pages listed in each site's sitemaps to the frontier."""
         async def fetch_body(url: str) -> Optional[bytes]:
-            result = await self.fetch_page(url, raw=True)
+            try:
+                result = await self.fetch_page(url, raw=True)
+            except Exception as e:  # sitemaps are a bonus: without one the crawl still has its links
+                self.logger.warning("sitemap_failed", url=url, error=str(e) or repr(e))
+                return None
             return result["body"] if result else None
+
+        def accept(url: str) -> bool:
+            try:
+                return self._accept_link(normalize_url(url))
+            except ValueError:  # malformed address in the sitemap
+                return False
 
         for site in {f"{urlparse(url).scheme}://{urlparse(url).netloc}" for url in start_urls}:
             declared = await self.politeness.robots_checker.sitemaps(site + "/")
@@ -293,7 +322,7 @@ class ProductionCrawler:
 
             urls: List[str] = []
             for sitemaps in attempts:
-                urls = await discover_urls(sitemaps, fetch_body, self._accept_link, self.config.max_pages)
+                urls = await discover_urls(sitemaps, fetch_body, accept, self.config.max_pages)
                 if urls:
                     break
 
@@ -354,7 +383,7 @@ class ProductionCrawler:
         busy = Counter(urlparse(url).netloc for url, _ in in_flight.values())
 
         while (frontier and len(in_flight) < self.config.concurrency.max_workers
-               and len(visited) < self.config.max_pages):
+               and self.state.page_count < self.config.max_pages):
             if self.config.open_web:
                 entry = frontier.popleft_ready(lambda waiting: self._ready_in(waiting, busy) == 0)
                 if entry is None:
@@ -369,7 +398,7 @@ class ProductionCrawler:
             if self._gave_up_on(url):
                 self._parked.append((url, depth))  # kept for a later --resume
                 continue
-            site = self._site_of(url)
+            site = site_of(url)
             if self._site_budget_spent(site):
                 for dropped, _ in frontier.drop_site(site):
                     self._queued.discard(dropped)
@@ -439,7 +468,7 @@ class ProductionCrawler:
 
     def _room_for(self, url: str) -> bool:
         """Whether the frontier should take another page. On the open web links never run out."""
-        site = self._site_of(url)
+        site = site_of(url)
         if self._site_budget_spent(site):
             return False
         budget = self.config.max_pages_per_site
@@ -452,15 +481,11 @@ class ProductionCrawler:
             return False
         return True
 
-    @staticmethod
-    def _site_of(url: str) -> str:
-        return site_of(url)
-
     def _gave_up_on(self, url: str) -> bool:
-        return self._refusals.get(self._site_of(url), 0) >= MAX_CONSECUTIVE_REFUSALS
+        return self._refusals.get(site_of(url), 0) >= MAX_CONSECUTIVE_REFUSALS
 
     def _note_refusal(self, url: str):
-        site = self._site_of(url)
+        site = site_of(url)
         self._refusals[site] = self._refusals.get(site, 0) + 1
         if self._refusals[site] == MAX_CONSECUTIVE_REFUSALS:
             self.logger.warning("site_abandoned", site=site, consecutive_refusals=MAX_CONSECUTIVE_REFUSALS)
@@ -483,13 +508,7 @@ class ProductionCrawler:
             self.compliance.log_scrape_event(url, "blocked", error=str(e))
             return None
 
-        if not await self.politeness.can_fetch(url):
-            failure = self.politeness.robots_checker.failure_for(url)
-            status = "robots_unreachable" if failure else "robots_disallowed"
-            self.logger.warning(status, url=url, reason=failure)
-            self.compliance.log_scrape_event(url, status, error=failure)
-            if failure and self.config.open_web:
-                self._note_refusal(url)  # a dead or unreachable site, of which the open web has many
+        if not await self._robots_allow(url):
             return None
 
         self._mention_slow_pacing(url)
@@ -527,7 +546,7 @@ class ProductionCrawler:
             try:
                 fetch_result = await self.fetcher.fetch(url, force_browser=True)
             except Exception:
-                raise e
+                raise e from None
 
         status = fetch_result["status_code"]
         log_request(self.logger, url, "GET", status, (time.time() - start_time) * 1000,
@@ -543,6 +562,13 @@ class ProductionCrawler:
                 self._note_refusal(url)
             return None
 
+        # The fetcher follows redirects by itself, so where it ended up has not been checked yet.
+        # Another site is not this crawl's business, unless a start page moved there.
+        final_url = fetch_result.get("final_url") or url
+        if final_url != url and (self._in_scope(final_url) or url in self._start_urls) \
+                and not await self._robots_allow(final_url, requested=url):
+            return None
+
         if fetch_result.get("truncated"):
             self.logger.warning("response_truncated", url=url)
 
@@ -551,6 +577,19 @@ class ProductionCrawler:
             self.raw_storage.save(url, fetch_result["content"])
 
         return fetch_result
+
+    async def _robots_allow(self, url: str, requested: Optional[str] = None) -> bool:
+        """Check url against its site's robots.txt. A refusal is logged under the address that was requested."""
+        if await self.politeness.can_fetch(url):
+            return True
+        failure = self.politeness.robots_checker.failure_for(url)
+        status = "robots_unreachable" if failure else "robots_disallowed"
+        reason = failure or (f"Redirected to {url}" if requested else None)
+        self.logger.warning(status, url=requested or url, reason=reason)
+        self.compliance.log_scrape_event(requested or url, status, error=reason)
+        if failure and self.config.open_web:
+            self._note_refusal(url)  # a dead or unreachable site, of which the open web has many
+        return False
 
     def _mention_slow_pacing(self, url: str):
         domain = urlparse(url).netloc
@@ -575,16 +614,18 @@ class ProductionCrawler:
                 self.compliance.log_scrape_event(url, "failed", error=str(e) or repr(e))
 
     async def _process(self, url: str, depth: int):
-        fetch_result = await self.fetch_page(url, render=self._render_sites.get(self._site_of(url), False))
+        fetch_result = await self.fetch_page(url, render=self._render_sites.get(site_of(url), False))
         if fetch_result is None:
             return
 
         final_url = normalize_url(fetch_result.get("final_url", url))
-        self.state.visited.add(final_url)  # a link to the redirect target is the same page
+        if final_url not in self.state.visited:  # a link to the redirect target is the same page
+            self.state.visited.add(final_url)
+            self.state.redirects.add(final_url)
 
         if not fetch_result.get("unchanged") and not self._landed_well(url, final_url, fetch_result):
             return
-        self._refusals.pop(self._site_of(url), None)
+        self._refusals.pop(site_of(url), None)
 
         # Hashing the decoded text matches what the ETag cache stores between runs.
         digest = hashlib.sha256(fetch_result["content"].encode("utf-8", "replace")
@@ -620,7 +661,7 @@ class ProductionCrawler:
 
         if status is None and not self._in_scope(final_url):
             if url in self._start_urls:
-                self._allowed_sites.add(self._site_of(final_url))  # the site simply moved
+                self._allowed_sites.add(site_of(final_url))  # the site simply moved
             else:
                 status = "off_site_redirect"
 
@@ -653,13 +694,13 @@ class ProductionCrawler:
 
     async def _best_view(self, url: str, fetch_result: Dict[str, Any]) -> Tuple[Dict[str, Any], ParsedPage]:
         """Parse a page, and try the browser when the result suggests more is there."""
-        self._learn_from_examples(fetch_result)
+        await self._learn_from_examples(fetch_result)
         page = await self._parse(fetch_result)
         if not self._worth_rendering(url, fetch_result, page):
             return fetch_result, page
         self.logger.info("trying_browser", url=url)
 
-        site = self._site_of(url)
+        site = site_of(url)
         self._render_attempts[site] = self._render_attempts.get(site, 0) + 1
         try:
             rendered = await self.fetch_page(url, render=True)
@@ -670,7 +711,7 @@ class ProductionCrawler:
         if rendered is None or classify_page(rendered) is not None:
             return fetch_result, page
 
-        self._learn_from_examples(rendered)
+        await self._learn_from_examples(rendered)
         rendered_page = await self._parse(rendered)
         if page_strength(rendered_page) <= page_strength(page) * RENDER_GAIN:
             return fetch_result, page
@@ -684,13 +725,13 @@ class ProductionCrawler:
         if not self.fetcher.fallback_enabled or fetch_result.get("fetcher_type") != "static":
             return False
 
-        site = self._site_of(url)
+        site = site_of(url)
         if self._render_attempts.get(site, 0) >= self._render_limit:
             return False
         if not is_html(fetch_result):
             return False
 
-        items = [item for item in page.items if any(value not in (None, "", []) for value in item.values())]
+        items = filled(page.items)
         if not items or self._examples:
             return True
         if not self._automatic:
@@ -705,12 +746,15 @@ class ProductionCrawler:
         self._probed_sites.add(site)
         return not next_page_links(Selector(text=fetch_result["content"], type="html"))
 
-    def _learn_from_examples(self, fetch_result: Dict[str, Any]):
+    async def _learn_from_examples(self, fetch_result: Dict[str, Any]):
         """Turn example values into selectors, once, from the first page that has them."""
         if not self._examples:
             return
 
-        learned = learn_selectors(fetch_result["content"], self._examples)
+        # Like parsing, this takes real time on a large page, so it stays off the event loop.
+        learned = await asyncio.to_thread(learn_selectors, fetch_result["content"], self._examples)
+        if not self._examples:
+            return  # another page taught them meanwhile
         if learned is None:
             self.logger.warning("examples_not_found", url=fetch_result["url"], examples=self._examples)
             return
@@ -725,7 +769,7 @@ class ProductionCrawler:
 
         Returns how many new items the page added.
         """
-        items = [item for item in page.items if any(value not in (None, "", []) for value in item.values())]
+        items = filled(page.items)
         if not items:
             log_parsing(self.logger, url, 0, len(page.errors))
             self.compliance.log_scrape_event(url, "no_data_extracted", error=page.errors[0] if page.errors else None)
@@ -757,7 +801,7 @@ class ProductionCrawler:
 
         Rows with no link of their own all share the page's URL. Those are separate records.
         """
-        key = (data.get("url"), data.get("title"))
+        key = (str(data.get("url")), str(data.get("title")))  # JSON records may hold objects in either
         mergeable = (self._automatic and data.get("title")
                      and (data.get("source_url") or data.get("source") not in RECORD_SOURCES))
         if mergeable and key in self._results_by_key:
@@ -808,13 +852,13 @@ class ProductionCrawler:
         """Queue links at depth. With hop, a link to another site is one level deeper and one
         within the site stays at depth, so max_depth counts how far the crawl strays from its seeds.
         """
-        home = self._site_of(base_url)
+        home = site_of(base_url)
         for link in links:
             try:
                 url = normalize_url(join_url(base_url, link.strip()))
             except ValueError:  # malformed href
                 continue
-            link_depth = depth + 1 if hop and self._site_of(url) != home else depth
+            link_depth = depth + 1 if hop and site_of(url) != home else depth
             if link_depth > self.config.max_depth:
                 continue
             if self._accept_link(url) and self._within_filter_budget(url):

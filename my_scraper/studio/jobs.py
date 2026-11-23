@@ -100,14 +100,14 @@ def config_from_request(request: Dict[str, Any]) -> CrawlConfig:
         args = parser.parse_args(argv + ["--quiet"])
         return build_config(args, parser)
     except argparse.ArgumentError as e:
-        raise InvalidJob(str(e))
+        raise InvalidJob(str(e)) from e
 
 
 def _strings(value: Any, field: str) -> List[str]:
     if value in (None, ""):
         return []
     if isinstance(value, str):
-        value = [line for line in value.splitlines()]
+        value = value.splitlines()
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise InvalidJob(f"{field} must be a list of text.")
     return [item.strip() for item in value if item.strip()]
@@ -141,23 +141,30 @@ class Job:
         self.events: Deque[Tuple[int, Dict[str, Any]]] = deque(maxlen=MAX_EVENTS)
         self.sketches: Deque[Tuple[int, Dict[str, Any]]] = deque(maxlen=MAX_SKETCHES)
         self._seq = 0
+        self._last_progress: Optional[Dict[str, Any]] = None
         self.summary: Dict[str, Any] = {}
 
     def add_event(self, entry: Dict[str, Any]):
         self._seq += 1
         (self.sketches if entry.get("message") == "page_sketch" else self.events).append((self._seq, entry))
 
-    def snapshot(self, since: Optional[int] = None) -> Dict[str, Any]:
+    def progress(self) -> Dict[str, Any]:
         crawler = self.crawler
-        progress = {"pages": 0, "items": 0, "queued": 0, "statuses": {}}
-        if crawler:
-            progress = {"pages": len(crawler.state.visited), "items": len(crawler.results),
-                        "queued": len(crawler.state.frontier),
-                        "statuses": dict(crawler.compliance.status_counts)}
+        if not crawler:
+            return self._last_progress or {"pages": 0, "items": 0, "queued": 0, "statuses": {}}
+        return {"pages": crawler.state.page_count, "items": len(crawler.results),
+                "queued": len(crawler.state.frontier), "statuses": dict(crawler.compliance.status_counts)}
+
+    def release(self):
+        """Keep a finished crawl's numbers and let its pages and items go: the studio may run for days."""
+        self._last_progress = self.progress()
+        self.crawler = None
+
+    def snapshot(self, since: Optional[int] = None) -> Dict[str, Any]:
         data = {
             "id": self.id, "status": self.status, "urls": self.config.start_urls,
             "request": self.request, "created": self.created, "started": self.started,
-            "finished": self.finished, "error": self.error, "progress": progress,
+            "finished": self.finished, "error": self.error, "progress": self.progress(),
             "max_pages": self.config.max_pages, "summary": self.summary, "last_event": self._seq,
         }
         if since is not None:
@@ -260,6 +267,7 @@ class JobQueue:
                     "learned": crawler.learned_selectors,
                     "export_errors": dict(crawler.storage.errors),
                 }
+                job.release()
             for handler in list(logger.handlers):
                 logger.removeHandler(handler)
                 handler.close()

@@ -11,7 +11,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from parsel import Selector
 
-from my_scraper.utils.urls import join_url
+from my_scraper.utils.urls import safe_join
 
 SITEMAP_LOCATIONS = ("/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml", "/wp-sitemap.xml", "/sitemap.xml.gz")
 
@@ -38,8 +38,8 @@ def feed_links(html: str, base_url: str) -> List[str]:
     links = []
     for link in Selector(text=html, type="html").xpath("//link[@rel='alternate'][@href]"):
         if link.attrib.get("type", "").lower() in FEED_TYPES:
-            links.append(join_url(base_url, link.attrib["href"]))
-    return links
+            links.append(safe_join(base_url, link.attrib["href"]))
+    return [link for link in links if link]
 
 
 def platform_endpoints(html: str, base_url: str) -> List[str]:
@@ -48,7 +48,8 @@ def platform_endpoints(html: str, base_url: str) -> List[str]:
 
     api_root = Selector(text=html, type="html").xpath(WORDPRESS_API_LINK).get()
     if api_root:
-        api_root = urljoin(base_url, api_root.rstrip("/") + "/")
+        api_root = safe_join(base_url, api_root.rstrip("/") + "/")
+    if api_root:
         endpoints.append(urljoin(api_root, WORDPRESS_POSTS))
         if WOOCOMMERCE_MARKER in html:
             endpoints.append(urljoin(api_root, WOOCOMMERCE_PRODUCTS))

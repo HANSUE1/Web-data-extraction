@@ -24,7 +24,7 @@ from my_scraper.config.settings import RESULTS_DIR  # noqa: E402
 from my_scraper.service.engine import ScrapeService  # noqa: E402
 from my_scraper.service.http_api import _dumps, _error, create_app as create_api  # noqa: E402
 from my_scraper.studio.jobs import InvalidJob, JobQueue  # noqa: E402
-from my_scraper.studio.results import Library, NotFound  # noqa: E402
+from my_scraper.studio.results import Library, NotFound, Unreadable  # noqa: E402
 
 STATIC = Path(__file__).parent / "static"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -58,6 +58,8 @@ def create_app(results_dir: str = RESULTS_DIR, service: Optional[ScrapeService] 
             response = await handler(request)
         except NotFound as e:
             return _error(404, "not_found", f"No such file or folder in the results: {e}")
+        except Unreadable as e:
+            return _error(422, "unreadable", str(e))
         if request.path.startswith("/static/") or request.path == "/":
             response.headers["Cache-Control"] = "no-cache"
         return response

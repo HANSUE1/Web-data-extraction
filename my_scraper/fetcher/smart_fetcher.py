@@ -2,7 +2,7 @@
 import hashlib
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -12,14 +12,13 @@ from w3lib.encoding import html_to_unicode
 from w3lib.html import get_meta_refresh
 
 from my_scraper.config.settings import FetcherType
-from my_scraper.core.page_checks import classify_page
+from my_scraper.core.page_checks import VISIBLE_TEXT, classify_page
 from my_scraper.fetcher.browser import BrowserFetcher, BrowserUnavailable
 from my_scraper.utils.http import create_session
 from my_scraper.utils.urls import has_route_fragment, site_key
 
 # Below this much visible text, an HTML page is probably rendered by JavaScript.
 MIN_VISIBLE_TEXT = 200
-VISIBLE_TEXT_XPATH = "//body//text()[not(ancestor::script or ancestor::style or ancestor::noscript)]"
 
 MAX_BODY_BYTES = 30 * 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
@@ -66,7 +65,7 @@ class StaticFetcher:
     def __init__(self, headers: Dict[str, str] = None, timeout: int = 30):
         self.headers = headers
         self.timeout = aiohttp.ClientTimeout(total=timeout)
-        self.cookies: Optional[Dict[str, str]] = None  # session cookies from --login
+        self.cookies: Optional[List[Dict[str, Any]]] = None  # session cookies from --login
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def fetch(self, url: str, headers: Dict[str, str] = None) -> Dict[str, Any]:
@@ -174,7 +173,7 @@ class SmartFetcher:
         if stripped[0] in "{[":
             return False
 
-        visible = "".join(part.strip() for part in Selector(text=content, type="html").xpath(VISIBLE_TEXT_XPATH).getall())
+        visible = "".join(part.strip() for part in Selector(text=content, type="html").xpath(VISIBLE_TEXT).getall())
         return len(visible) < MIN_VISIBLE_TEXT
 
     async def fetch(self, url: str, force_browser: bool = False,
@@ -196,16 +195,15 @@ class SmartFetcher:
             return result
 
         try:
-            return await self._fetch_with_fallback(url)
+            return {**await self._render(url), "fallback_used": True}
         except Exception:
             result["fallback_attempted"] = True
             result["fallback_failed"] = True
             return result
 
     async def login(self, url: str, username: str, password: str):
-        """Log in once; the session cookies then ride along on every static and browser request."""
-        cookies = await self.browser_fetcher.login(url, username, password)
-        self.static_fetcher.cookies = {c["name"]: c["value"] for c in cookies}
+        """Log in once; the session cookies then go with every later request to the site that set them."""
+        self.static_fetcher.cookies = await self.browser_fetcher.login(url, username, password)
         await self.static_fetcher.close()  # drop any session so the next one carries the cookies
 
     async def _render(self, url: str) -> Dict[str, Any]:
@@ -215,11 +213,6 @@ class SmartFetcher:
             self.browser_failed = True  # the rest of the crawl carries on with plain HTTP
             raise
 
-    async def _fetch_with_fallback(self, url: str) -> Dict[str, Any]:
-        result = await self._render(url)
-        result["fallback_used"] = True
-        return result
-
     async def close(self):
         await self.static_fetcher.close()
         await self.browser_fetcher.close()
@@ -228,7 +221,7 @@ class SmartFetcher:
 class RawHtmlStorage:
     """Store raw HTML in blob storage."""
 
-    def __init__(self, storage_path: str = "./data/raw_html"):
+    def __init__(self, storage_path: str):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
 

@@ -9,8 +9,8 @@ from parsel import Selector
 
 from my_scraper.fetcher.discovery import is_platform_api
 from my_scraper.parser import documents
-from my_scraper.parser.auto_extractor import extract_items
-from my_scraper.parser.embedded_state import find_record_lists, records_to_items
+from my_scraper.parser.auto_extractor import extract_items, unique_items
+from my_scraper.parser.embedded_state import decode_json, find_record_lists, platform_items
 
 MULTI_VALUE_SUFFIX = "[]"  # a selector named tags[] collects every match, not just the first
 ALL_TEXT = " ::text"  # with the space: all text inside the element, including its children
@@ -42,15 +42,16 @@ def load_json(text: str) -> Any:
     """Parse JSON, including guarded, JSONP and one-record-per-line forms."""
     text = JSON_GUARD.sub("", text, count=1)
     try:
-        return json.loads(text)
+        return decode_json(text)
     except ValueError:
         wrapped = JSONP_WRAPPER.match(text)
         if wrapped:
             try:
-                return json.loads(wrapped.group(1))
+                return decode_json(wrapped.group(1))
             except ValueError:
                 pass
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
+    # Not splitlines(), which also breaks on characters JSON leaves unescaped, such as U+2028.
+    return [decode_json(line) for line in re.split(r"[\r\n]+", text) if line.strip()]
 
 
 @dataclass
@@ -218,9 +219,7 @@ class UniversalParser:
             else:
                 pages.append(self.html_parser.parse(html, url, selectors))
 
-        items: List[Dict[str, Any]] = []
-        for page in pages:
-            items.extend(item for item in page.items if item not in items)
+        items = unique_items([item for page in pages for item in page.items])
         return ParsedPage(items=items, url=url, errors=[error for page in pages for error in page.errors])
 
     def _parse_file(self, kind: str, content: str, body: Optional[bytes], url: str) -> ParsedPage:
@@ -247,14 +246,14 @@ class UniversalParser:
         """Records from a JSON response, kept as they are unless a known platform API sent them."""
         data = load_json(content)
         if is_platform_api(url):
-            return records_to_items([data], url, "api")
+            return platform_items(data, url)
 
         lists = list(find_record_lists(data))
         if lists:
             records = max(lists, key=len)
-            return [{**record, "source": "json"} for record in records]
+            return [documents.tagged(record, "json") for record in records]
         if isinstance(data, dict):
-            return [{**data, "source": "json"}]
+            return [documents.tagged(data, "json")]
         if isinstance(data, list) and data and all(isinstance(entry, dict) for entry in data):
-            return [{**entry, "source": "json"} for entry in data]
+            return [documents.tagged(entry, "json") for entry in data]
         return [{"data": data, "source": "json"}] if data else []

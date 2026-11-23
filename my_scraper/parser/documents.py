@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from lxml import etree
 from lxml import html as lxml_html
 
-from my_scraper.utils.urls import join_url
+from my_scraper.utils.urls import safe_join
 
 Item = Dict[str, Any]
 
@@ -29,6 +29,13 @@ def unique_headers(names: List[Any]) -> List[str]:
     return headers
 
 
+def tagged(record: Item, source: str) -> Item:
+    """The record with how it was found as its source. A field already called that is kept as source_column."""
+    if "source" in record:
+        record = {("source_column" if name == "source" else name): value for name, value in record.items()}
+    return {**record, "source": source}
+
+
 # --- Delimited text ----------------------------------------------------------
 
 def parse_csv(text: str) -> List[Item]:
@@ -48,7 +55,7 @@ def parse_csv(text: str) -> List[Item]:
     for row in rows[1:]:
         item = {header: value.strip() for header, value in zip(headers, row, strict=False) if value.strip()}
         if item:
-            items.append({**item, "source": "csv"})
+            items.append(tagged(item, "csv"))
     return items
 
 
@@ -127,7 +134,7 @@ def parse_feed(root, page_url: str) -> List[Item]:
         link = _entry_link(entry)
         item = {
             "title": _text_of(_child(entry, "title")),
-            "url": join_url(page_url, link) if link else None,
+            "url": safe_join(page_url, link) if link else None,
             "description": _text_of(_child(entry, "description", "summary", "content", "encoded")),
             "date": _text_of(_child(entry, "pubdate", "published", "updated", "date")),
             "author": _text_of(name if name is not None else author),
@@ -168,7 +175,7 @@ def parse_xml(body: bytes, page_url: str) -> List[Item]:
         if not fields and _text_of(record):
             fields["value"] = _text_of(record)
         if fields:
-            items.append({**fields, "source": "xml"})
+            items.append(tagged(fields, "xml"))
     return items
 
 
@@ -227,6 +234,6 @@ def parse_xlsx(body: bytes) -> List[Item]:
         for row in rows[1:]:
             item = {header: value for header, value in zip(headers, row, strict=False) if value not in (None, "")}
             if item:
-                items.append({**item, "sheet": sheet.title, "source": "xlsx"})
+                items.append({**tagged(item, "xlsx"), "sheet": sheet.title})
     workbook.close()
     return items

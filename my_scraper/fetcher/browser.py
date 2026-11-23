@@ -8,6 +8,7 @@ no attempt to hide from detection.
 import asyncio
 import json
 import time
+from contextlib import suppress
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -187,21 +188,29 @@ class BrowserFetcher:
                 try:
                     from playwright.async_api import async_playwright
 
-                    self._playwright = await async_playwright().start()
+                    if self._playwright is None:  # still there when only the browser crashed
+                        self._playwright = await async_playwright().start()
                     self._browser = await self._playwright.chromium.launch(headless=self.headless)
                 except Exception as e:
+                    await self._stop()  # or every later page would leave another driver process behind
                     raise BrowserUnavailable(
                         "Browser could not start. Use 'pip install playwright' and 'playwright install chromium'. "
                         f"({str(e).splitlines()[0] if str(e) else type(e).__name__})"
                     ) from e
         return self._browser
 
+    async def _stop(self):
+        with suppress(Exception):  # a browser that crashed cannot be closed, and must not keep the driver alive
+            if self._browser is not None:
+                await self._browser.close()
+        with suppress(Exception):
+            if self._playwright is not None:
+                await self._playwright.stop()
+        self._browser = self._playwright = None
+
     async def close(self):
-        if self._browser is not None:
-            await self._browser.close()
-        if self._playwright is not None:
-            await self._playwright.stop()
-        self._browser = self._playwright = self._start_lock = self._slots = None
+        await self._stop()
+        self._start_lock = self._slots = None
 
     async def login(self, url: str, username: str, password: str) -> List[Dict[str, Any]]:
         """Submit a login form and keep its session cookies for later fetches.

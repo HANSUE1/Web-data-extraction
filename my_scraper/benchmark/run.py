@@ -24,6 +24,12 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from my_scraper.config.settings import LOGS_DIR, RESULTS_DIR  # noqa: E402
+from my_scraper.parser.auto_extractor import visual_length  # noqa: E402
+
+LOGS, RESULTS = Path(LOGS_DIR), Path(RESULTS_DIR)  # where each run writes, inside its own folder
 CLI = REPO_ROOT / "my_scraper" / "cli" / "main.py"
 SITES = Path(__file__).with_name("sites.json")
 
@@ -36,7 +42,14 @@ META_FIELDS = {"url", "source", "source_url", "type"}
 
 
 def read_jsonl(path: Path) -> list:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    """Records of a JSONL file. A line cut short, as when a run is stopped for time, is skipped."""
+    records = []
+    for line in path.read_text(encoding="utf-8", errors="replace").split("\n"):
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    return records
 
 
 def junk_ratio(items: list) -> float:
@@ -45,11 +58,6 @@ def junk_ratio(items: list) -> float:
         return 0.0
     garbled = sum(1 for item in items if "\ufffd" in json.dumps(item, ensure_ascii=False))
     return garbled / len(items)
-
-
-def visual_length(text: str) -> int:
-    """Length that treats CJK characters as wide, since they carry about two letters' worth."""
-    return sum(2 if ord(character) >= 0x2E80 else 1 for character in text)
 
 
 def problems_with(site: dict, items: list) -> list:
@@ -121,13 +129,13 @@ async def run_site(site: dict, limit: asyncio.Semaphore) -> dict:
             output, _ = await process.communicate()
             timed_out = True
 
-        results = workdir / "outputs" / "results"
+        results = workdir / RESULTS
         exports = list(results.rglob("*.jsonl")) if results.exists() else []
         items = read_jsonl(exports[0]) if exports else []
 
         statuses: dict = collections.Counter()
         errors = []
-        audit = workdir / "logs" / "audit.log"
+        audit = workdir / LOGS / "audit.log"
         if audit.exists():
             for event in read_jsonl(audit):
                 statuses[event.get("status")] += 1
@@ -135,7 +143,7 @@ async def run_site(site: dict, limit: asyncio.Semaphore) -> dict:
                     errors.append(event["error"][:160])
 
         fetchers = set()
-        log_file = workdir / "logs" / "scraper.log"
+        log_file = workdir / LOGS / "scraper.log"
         if log_file.exists():
             for entry in read_jsonl(log_file):
                 if entry.get("message") == "http_request":
