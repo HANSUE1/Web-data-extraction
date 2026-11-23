@@ -166,7 +166,7 @@ See `config/settings.py` for all settings.
 
 ## How Items Are Found Automatically
 
-With no selectors, independent methods look at each page and the best answer wins. The `source` field of every item says which one was used.
+With no selectors, independent methods look at each page and the best answer wins. The `source` field of every item says which one was used. A file or API with a field of that name keeps it as `source_column`.
 
 | `source` | What it means | Typical pages |
 | --- | --- | --- |
@@ -198,6 +198,7 @@ Automatic extraction goes by page structure, so it can pick the wrong block on u
 
 **Politeness**
 - robots.txt rules are applied in full, including wildcards and rule priority. They are cached per site. If the file can't be reached, or answers 429 Too Many Requests, the site is skipped, per RFC 9309, and checked again after a minute. That shows up as `robots_unreachable` with the reason, so it can't be confused with a real `robots_disallowed`
+- A redirect is checked again where it lands, so a page that forwards into a disallowed path is not kept
 - Each domain is paced separately, slowed down automatically on 429 and 503 responses, and never faster than its `Crawl-delay`
 - `Retry-After` is obeyed once. A server that keeps rate limiting, or asks for a very long wait, ends that URL with a clear message
 - After 5 refusals in a row a site is left alone, and its remaining pages are kept for `--resume`
@@ -262,11 +263,13 @@ Before a large open-web crawl, set `robots.user_agent` to a name and contact add
 Web-data-extraction/
 ├── README.md
 ├── requirements.txt
+├── scrape.py               # standalone one-page script, separate from the scraper below
 ├── examples/
 │   └── books_toscrape.py   # worked example: a hand-written scraper built on the crawler
 ├── outputs/                # everything the scraper writes (see Quick Start), not in git
 └── my_scraper/
     ├── cli/                # command line: main.py, and explain.py for --explain
+    ├── studio/             # the desktop app: server, jobs, results, and its pages in static/
     ├── service/            # MCP server and HTTP API, sharing one engine
     ├── config/             # settings and their defaults
     ├── core/               # crawler, frontier, link finding, page checks
@@ -283,7 +286,7 @@ For a quick one-page job, the CLI does what a separate script would: `--max-dept
 
 ## Logging in
 
-`--login LOGIN_URL USERNAME PASSWORD` logs in once before the crawl, for sites you own or may access. It opens the login page in the browser, fills the first username/email field and the password field of the form that holds the password, submits it, and reuses the session cookies for the whole crawl, on both plain HTTP and browser requests.
+`--login LOGIN_URL USERNAME PASSWORD` logs in once before the crawl, for sites you own or may access. It opens the login page in the browser, fills the first username/email field and the password field of the form that holds the password, submits it, and reuses the session cookies for the whole crawl, on both plain HTTP and browser requests. Each cookie only goes to the site that set it.
 
 ```bash
 python -m my_scraper.cli.main --urls https://example.com/members \

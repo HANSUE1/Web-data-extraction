@@ -39,7 +39,10 @@ class SiteFrontier:
         """The next page of the site whose turn it is. That site then goes to the back."""
         if not self._sites:
             raise IndexError("pop from an empty frontier")
-        site, queue = next(iter(self._sites.items()))
+        return self._take_from(next(iter(self._sites)))
+
+    def _take_from(self, site: str) -> QueuedUrl:
+        queue = self._sites[site]
         entry = queue.popleft()
         self._size -= 1
         if queue:
@@ -53,18 +56,8 @@ class SiteFrontier:
 
         Skipped sites keep their place at the front, so they are served as soon as they are ready.
         """
-        for site, queue in self._sites.items():
-            if is_ready(queue[0][0]):
-                break
-        else:
-            return None
-        entry = queue.popleft()
-        self._size -= 1
-        if queue:
-            self._sites.move_to_end(site)
-        else:
-            del self._sites[site]
-        return entry
+        site = next((site for site, queue in self._sites.items() if is_ready(queue[0][0])), None)
+        return None if site is None else self._take_from(site)
 
     def heads(self) -> Iterator[str]:
         """The URL each site would serve next."""

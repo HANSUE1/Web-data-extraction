@@ -192,7 +192,7 @@ class UniversalParser:
             if not any(cut):
                 return self._parse_html(fetch_result, selectors, item_selector, include_markdown)
             trimmed = {**fetch_result, "content": cut[0] or content,
-                       "snapshots": [short or full for short, full in zip(cut[1:], fetch_result.get("snapshots") or [])]}
+                       "snapshots": [short or full for short, full in zip(cut[1:], fetch_result.get("snapshots") or [], strict=True)]}
             page = self._parse_html(trimmed, selectors, item_selector, include_markdown)
             page.errors.append(f"Page has over {MAX_HTML_TAGS:,} tags; only the first {MAX_HTML_TAGS:,} were read")
             return page

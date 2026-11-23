@@ -67,7 +67,7 @@ export async function api(path, { method = "GET", body, query } = {}) {
   const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   let data = null;
   try { data = await res.json(); } catch (e) { /* empty body */ }
-  if (!res.ok) throw new Error((data && (data.message || data.error)) || `HTTP ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error((data && (data.message || data.error)) || `HTTP ${res.status}`), { status: res.status });
   return data;
 }
 
@@ -78,13 +78,26 @@ export function toast(message, bad = false, onClick) {
   setTimeout(() => { node.classList.add("out"); setTimeout(() => node.remove(), 320); }, bad ? 6000 : 3600);
 }
 
+let covers = 0;
+/** Put the page behind an overlay out of reach. Returns what undoes it and gives the focus back. */
+export function coverPage() {
+  const back = document.activeElement, behind = [$("#stage"), $(".rail")];
+  covers++;
+  behind.forEach((node) => { node.inert = true; });
+  return () => {
+    if (--covers === 0) behind.forEach((node) => { node.inert = false; });
+    if (back?.isConnected) back.focus({ preventScroll: true });
+  };
+}
+
 export function confirmBox(title, text, okText = "Delete") {
   return new Promise((resolve) => {
-    const close = (answer) => { box.remove(); document.removeEventListener("keydown", onKey); resolve(answer); };
+    const release = coverPage();
+    const close = (answer) => { box.remove(); release(); document.removeEventListener("keydown", onKey); resolve(answer); };
     const onKey = (e) => { if (e.key === "Escape") close(false); };
     const ok = el("button", { class: "btn danger", onclick: () => close(true) }, icon("trash"), okText);
     const box = el("div", { class: "confirm", onclick: (e) => { if (e.target === box) close(false); } },
-      el("div", { class: "box", role: "alertdialog", "aria-label": title },
+      el("div", { class: "box", role: "alertdialog", "aria-modal": "true", "aria-label": title },
         el("h3", { text: title }), el("p", { text }),
         el("div", { class: "row" }, el("button", { class: "btn ghost", onclick: () => close(false) }, "Keep it"), ok)));
     document.body.append(box);
@@ -157,8 +170,8 @@ export function tabs(items, active, onChange) {
   const box = el("div", { class: "tabs", role: "tablist" });
   const move = () => { const on = $("button.on", box); if (on) { line.style.width = on.offsetWidth + "px"; line.style.transform = `translateX(${on.offsetLeft}px)`; } };
   for (const item of items) {
-    box.append(el("button", { class: item.key === active ? "on" : "", role: "tab",
-      onclick: (e) => { $$("button", box).forEach((b) => b.classList.toggle("on", b === e.currentTarget)); move(); onChange(item.key); } },
+    box.append(el("button", { class: item.key === active ? "on" : "", role: "tab", "aria-selected": String(item.key === active),
+      onclick: (e) => { $$("button", box).forEach((b) => { b.classList.toggle("on", b === e.currentTarget); b.setAttribute("aria-selected", String(b === e.currentTarget)); }); move(); onChange(item.key); } },
       item.label, item.note != null ? el("small", { text: item.note }) : null));
   }
   box.append(line);

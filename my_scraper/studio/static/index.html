@@ -7,7 +7,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23121110'/><path d='M6 10q10 8 20 0M6 16q10 8 20 0M6 22q10 8 20 0' stroke='%23c8f560' stroke-width='2.4' fill='none' stroke-linecap='round'/></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" media="print" onload="this.media='all'"><!-- never holds up the page: offline, the fallback fonts show at once -->
   <link rel="stylesheet" href="/static/studio.css">
   <script>
     try { const t = localStorage.getItem("seine.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
@@ -51,14 +51,14 @@
   </main>
 
   <div class="palette" id="palette" hidden>
-    <div class="palette-box" role="dialog" aria-label="Command palette">
-      <input id="paletteInput" placeholder="Type a command, a site, or a run…" autocomplete="off">
+    <div class="palette-box" role="dialog" aria-modal="true" aria-label="Command palette">
+      <input id="paletteInput" aria-label="Search commands, sites and runs" placeholder="Type a command, a site, or a run…" autocomplete="off">
       <ul id="paletteList" role="listbox"></ul>
       <footer><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></footer>
     </div>
   </div>
 
-  <aside class="drawer" id="drawer" aria-label="Record detail" hidden>
+  <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" hidden>
     <div class="drawer-panel">
       <header><h3 id="drawerTitle">Record</h3><button class="icon-btn" id="drawerClose" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
       <div class="drawer-body" id="drawerBody"></div>

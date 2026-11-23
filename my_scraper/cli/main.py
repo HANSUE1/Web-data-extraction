@@ -267,6 +267,9 @@ def main(argv: Optional[List[str]] = None):
     try:
         asyncio.run(crawler.crawl(resume=args.resume))
         print_summary(crawler, "Crawling completed.")
+        if crawler.storage.errors and not any(crawler.exports.values()):
+            print(f"Error: nothing could be saved: {next(iter(crawler.storage.errors.values()))}", file=sys.stderr)
+            sys.exit(1)
     except KeyboardInterrupt:
         print_summary(crawler, "Crawling interrupted, partial results saved. Continue with --resume.")
     except Exception as e:

@@ -42,7 +42,7 @@ def fetch_playwright(url, timeout_ms=60000):
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:
-        raise RuntimeError(f"Playwright not available: {exc}")
+        raise RuntimeError(f"Playwright not available: {exc}") from exc
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(user_agent=USER_AGENT)
@@ -155,21 +155,26 @@ def main():
     outdir = ensure_dir(os.path.join("outputs", domain))
     base_name = os.path.basename(parsed.path).strip("/") or "index"
 
-    if args.api_quotes or "quotes.toscrape.com" in args.url:
+    if args.api_quotes or ("quotes.toscrape.com" in args.url and not args.item):  # your own selectors win
         print("Using quotes.toscrape.com API route...")
         items = scrape_quotes_api()
     else:
         if not args.item or not args.field:
-            print("Need --item and --field for generic scraping")
-            sys.exit(1)
+            parser.error("generic scraping needs --item and at least one --field")
         fields = {}
         for f in args.field:
-            if ":" in f:
-                k, v = f.split(":", 1)
-                fields[k] = v
-        items = scrape(args.url, args.item, fields, args.mode)
+            name, _, selector = f.partition(":")
+            if not (name and selector):
+                parser.error(f"--field must look like name:selector, got: {f}")
+            fields[name] = selector
+        try:
+            items = scrape(args.url, args.item, fields, args.mode)
+        except (requests.RequestException, RuntimeError) as exc:
+            sys.exit(f"Error: {exc}")
 
     save(items, outdir, base_name)
+    if not items:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

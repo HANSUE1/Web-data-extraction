@@ -46,7 +46,7 @@ export function heroNet(canvas) {
   const onLeave = () => { mouse = { x: -999, y: -999 }; };
   const host = canvas.parentElement;
   host.addEventListener("pointermove", onMove); host.addEventListener("pointerleave", onLeave);
-  const ro = new ResizeObserver(() => size()); ro.observe(canvas);
+  const ro = new ResizeObserver(() => { size(); if (reduced) frame(performance.now()); }); ro.observe(canvas);  // resizing clears it
   size(); raf = requestAnimationFrame(frame);
   // scrolled out of view: stop drawing, it would burn a frame loop nobody sees
   const io = new IntersectionObserver(([e]) => {
