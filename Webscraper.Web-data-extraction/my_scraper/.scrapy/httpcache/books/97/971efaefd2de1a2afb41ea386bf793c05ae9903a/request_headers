@@ -1,0 +1,5 @@
+Referer: http://books.toscrape.com/catalogue/page-28.html
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+Accept-Language: en
+User-Agent: MyScraperBot/1.0 (+https://example.com/bot; bot@example.com)
+Accept-Encoding: gzip, deflate, br, zstd
