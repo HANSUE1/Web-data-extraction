@@ -25,11 +25,13 @@ from my_scraper.service.engine import DEFAULT_MAX_CHARS, ScrapeService, ServiceE
 INSTRUCTIONS = """Reads public web pages for you. Use scrape_url for one page (clean Markdown \
 plus structured items), crawl_site to read several pages of one site, map_site to list a \
 site's pages before choosing which to read, and extract to pull named fields such as price \
-or author. Pages are fetched politely: robots.txt is obeyed, logins, paywalls and anti-bot \
+or author. watch_page reports what changed on a page since last time, and interact clicks, \
+scrolls, filters and searches in a browser when the data needs it. Pages are fetched politely: robots.txt is obeyed, logins, paywalls and anti-bot \
 walls are never bypassed, and a refusal is reported as an error with the reason. JavaScript \
 sites are rendered in a browser automatically when needed."""
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=True, idempotentHint=True)
+ACTS = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True, idempotentHint=False)
 
 _service: Optional[ScrapeService] = None
 
@@ -136,6 +138,38 @@ async def extract(url: str, fields: List[str], many: bool = False, render: str =
         render: "auto", "always" or "never", as for scrape_url.
     """
     return await _answer(service().extract(url, fields, many=many, render=render))
+
+
+@mcp.tool(annotations=ACTS, structured_output=False)
+async def watch_page(url: str, render: str = "auto") -> Dict[str, Any]:
+    """What changed on a page since you last watched it: items that are new, changed (with each
+    field before and after) or removed, and whether the text changed. The first call saves the
+    baseline and reports no changes.
+
+    Args:
+        url: The page.
+        render: "auto", "always" or "never", as for scrape_url.
+    """
+    return await _answer(service().watch(url, render=render))
+
+
+@mcp.tool(annotations=ACTS, structured_output=False)
+async def interact(url: str, actions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Use a page in a real browser, for data that only appears after clicking, scrolling,
+    filtering or searching. Call it without actions to see the page and its controls, then
+    again with steps. Every call starts fresh, so repeat the earlier steps and add the next.
+
+    Login, purchase, sign-up, posting and deletion are refused, as is leaving the site.
+
+    Args:
+        url: The page to start on.
+        actions: Steps in order, at most 20. Targets are Playwright selectors such as
+            "role=button[name='Load more']", "text=Reviews" or "#sort".
+            {"click": target, "until": target, "times": n}   {"scroll": screens, "until": target}
+            {"fill": target, "value": text}   {"select": target, "value": option}
+            {"press": "Enter"}   {"wait": target}
+    """
+    return await _answer(service().interact(url, actions))
 
 
 def main(argv: Optional[List[str]] = None):

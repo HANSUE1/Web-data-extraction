@@ -4,17 +4,20 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import time
-from collections import Counter
+import uuid
+from collections import Counter, deque
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from parsel import Selector
 
 from my_scraper.compliance.manager import ComplianceManager
+from my_scraper.compliance.risk import GO, load_register, register_decision
 from my_scraper.core.frontier import QueuedUrl, SiteFrontier
-from my_scraper.core.links import base_url_of, forbids_following, next_page_links, page_links
+from my_scraper.core.links import base_url_of, forbids_following, next_page_links, page_links, robots_directives
 from my_scraper.core.page_checks import BLOCKED, CONSENT, LOGIN, classify_page, is_html
 from my_scraper.fetcher.discovery import (
     SITEMAP_LOCATIONS,
@@ -26,19 +29,31 @@ from my_scraper.fetcher.discovery import (
 )
 from my_scraper.fetcher.sitemap import discover_urls
 from my_scraper.fetcher.smart_fetcher import RawHtmlStorage, SmartFetcher
+from my_scraper.ops.alerts import Alert, Notifier, post_json, window_alerts
+from my_scraper.ops.history import History, success_ratio
+from my_scraper.ops.metrics import METRICS
 from my_scraper.parser.by_example import learn_selectors
+from my_scraper.parser.llm import LLMExtractor
+from my_scraper.parser.selectors import SelectorCache
 from my_scraper.parser.universal_parser import ParsedPage, UniversalParser
+from my_scraper.parser.version import parser_version
+from my_scraper.quality.dedup import Deduplicator
+from my_scraper.quality.normalize import normalize_item
+from my_scraper.quality.provenance import META, PageProvenance, merge
+from my_scraper.quality.report import SchemaValidator, drift, quality_of, threshold_failures
 from my_scraper.storage.changes import ChangeReport, crawl_file, track
 from my_scraper.storage.etag_cache import ETagCache
 from my_scraper.storage.multi_format import StorageManager
-from my_scraper.utils.logs import StructuredLogger, log_parsing, log_request
+from my_scraper.storage.snapshots import SnapshotStore
+from my_scraper.utils.logs import StructuredLogger, bind, log_parsing, log_request
 from my_scraper.utils.politeness import PolitenessManager
-from my_scraper.utils.retry import HttpStatusError, RetryManager
+from my_scraper.utils.retry import HttpStatusError, RetryContext, RetryManager
 from my_scraper.utils.urls import domain_key, facet_key, is_action, is_asset, is_trap, join_url, normalize_url, site_key
 
 CHECKPOINT_EVERY_PAGES = 10
 
-MAX_CONSECUTIVE_REFUSALS = 5   # after this, stop asking a site that keeps saying no
+DRIFT_RUNS = 5                 # earlier runs a run's quality is compared with
+
 REFUSAL_STATUSES = {401, 403, 407, 429, 451, 503}
 
 MAX_FILTER_VARIANTS = 200      # filter combinations per path, as faceted search never ends
@@ -54,6 +69,16 @@ RECORD_SOURCES = {"list", "table", "csv", "xml", "xlsx", "json", "embedded", "ne
 QUEUE_PER_SITE_FACTOR = 4      # links kept waiting per site, as a multiple of its page budget
 OPEN_WEB_RENDER_ATTEMPTS = 1   # across thousands of sites, the browser is only tried once each
 OPEN_WEB_MAX_IDLE = 10         # seconds; with only slow sites left, stop and keep them for --resume
+
+
+class NotCleared(Exception):
+    """compliance.require_go is set and the site register does not clear a start site."""
+
+
+class ParseFailed(Exception):
+    """The page was fetched but could not be parsed. Its snapshot can be parsed again, so it is not fetched again."""
+
+    snapshot_id: Optional[str] = None
 
 
 def site_of(url: str) -> str:
@@ -183,6 +208,12 @@ class ProductionCrawler:
         self._exclude = [re.compile(pattern) for pattern in config.exclude_patterns]
         self._filter_variants: Dict[str, Set[tuple]] = {}
         self._refusals: Dict[str, int] = {}
+        self._recent: Dict[str, Deque[bool]] = {}  # each site's last outcomes, for its circuit breaker
+        self._open_circuits: Set[str] = set()
+        self.duplicates = 0
+        self._known: List[Dict[str, Any]] = []  # records of earlier runs, met again and not published again
+        self.quality: Dict[str, Any] = {}
+        self.run_id = f"run_{uuid.uuid4().hex[:12]}"
         self._parked: List[QueuedUrl] = []
         self._render_sites: Dict[str, bool] = {}   # learned per site: does it need the browser?
         self._render_attempts: Dict[str, int] = {}
@@ -192,11 +223,23 @@ class ProductionCrawler:
         self.politeness = PolitenessManager(config)
         self.retry_manager = RetryManager(config)
         self.fetcher = SmartFetcher(config)
+        self.politeness.robots_checker.proxies = self.fetcher.proxies
+        self.fetcher.browser_fetcher.may_visit = self._may_visit
         self.parser = UniversalParser(config.required_fields)
         self.storage = StorageManager(config)
         self.compliance = ComplianceManager(config)
         self.raw_storage = RawHtmlStorage(config.storage.blob_storage_path or str(self.state_dir / "raw_html"))
         self.etag_cache = ETagCache(str(self.state_dir / "etag_cache.db")) if config.incremental else None
+        self.snapshots = SnapshotStore(str(self.state_dir), config.storage.snapshot_location) \
+            if config.storage.snapshots else None
+        self.selector_cache = SelectorCache(str(self.state_dir / "selectors.json"))
+        self.schema = SchemaValidator(config.quality.schema) if config.quality.schema else None
+        self.dedup = Deduplicator(str(self.state_dir / "dedup.db"), config.quality.dedupe == "cross") \
+            if config.quality.dedupe != "off" else None
+        self.llm = LLMExtractor(config.llm, str(self.state_dir / "llm_audit.jsonl"), self.compliance.redact_text) \
+            if config.llm.enabled else None
+        self.history: Optional[History] = None  # opened when a crawl starts
+        self.compliance.on_event = self._on_outcome
         self.logger = StructuredLogger(
             config.name,
             log_file=config.logging.log_file,
@@ -204,8 +247,19 @@ class ProductionCrawler:
             level=config.logging.level,
             console=config.logging.console,
         )
+        self.logger.context = {"run_id": self.run_id, **({"job_id": config.job_id} if config.job_id else {})}
+
+    def _on_outcome(self, url: str, status: str, error: Optional[str]):
+        METRICS.inc("scraper_pages_total", status=status)
+        if self.history:
+            try:
+                self.history.outcome(self.run_id, url, status, error)
+            except sqlite3.Error as e:  # statistics must never cost the crawl a page
+                self.logger.warning("history_not_written", error=str(e))
 
     def _checkpoint_for(self, start_urls: List[str]) -> CrawlState:
+        if self.config.job_id:
+            return CrawlState(str(self.state_dir / "crawls" / f"{self.config.job_id}.json"))
         # Normalized, so --resume finds the checkpoint whether or not the URL was typed with a "/".
         urls = [normalize_url(url) for url in start_urls]
         return CrawlState(str(crawl_file(urls, self.state_dir / "crawls")))
@@ -222,7 +276,8 @@ class ProductionCrawler:
         """
         if start_urls is None:
             start_urls = self.config.start_urls
-        elif sorted(start_urls) != sorted(self.config.start_urls):
+        self._require_clearance(start_urls)
+        if sorted(start_urls) != sorted(self.config.start_urls):
             self.state = self._checkpoint_for(start_urls)
         if selectors is not None:
             self._selectors = dict(selectors)
@@ -232,6 +287,8 @@ class ProductionCrawler:
             self._queued = {url for url, _ in self.state.frontier}
             self._site_pages = Counter(site_of(url) for url in self.state.visited - self.state.redirects)
             for item in self.state.load_items():
+                if self.dedup:
+                    self.dedup.duplicate_of(item)
                 self._add_result(item)
             self.logger.info("crawl_resumed", visited=len(self.state.visited), queued=len(self._queued),
                              items_restored=len(self.results))
@@ -242,28 +299,46 @@ class ProductionCrawler:
         if self.state.start_time is None:
             self.state.start_time = started
 
-        self.logger.info("crawl_started", start_urls=start_urls, max_depth=self.config.max_depth)
+        key = self._crawl_key(start_urls)
+        self.history = History(str(self.state_dir))
+        self.history.start(self.run_id, self.config.job_id, key, site_of(start_urls[0]) if start_urls else "",
+                           parser_version())
+        self.logger.info("crawl_started", start_urls=start_urls, max_depth=self.config.max_depth,
+                         parser_version=parser_version())
         self._start_urls = {normalize_url(url) for url in start_urls}
         for url in self._start_urls:
             self._enqueue(url, 0)
         self.state.save()  # from here on, a crash at any moment can be resumed
 
+        outcome = "interrupted"
         try:
+            await self._check_proxies()
             if self.config.login:
                 await self.fetcher.login(**self.config.login)  # credentials stay out of the log
                 self.logger.info("logged_in", url=self.config.login.get("url"))
             if self.config.use_sitemap:
                 await self._seed_from_sitemaps(start_urls)
             await self._run_frontier()
+            outcome = "completed"
+        except Exception:
+            outcome = "failed"
+            raise
         finally:
             self.state.frontier.extend(self._parked)
             self.state.save()
-            self.exports = self.storage.export(self._picked(self.results))
+            alerts = self._publish(key, start_urls, outcome)
             for fmt, error in self.storage.errors.items():
                 self.logger.error("export_failed", format=fmt, error=error)
             if self.config.track_changes:
                 self._track_changes(start_urls)
+            if outcome != "interrupted":  # stopping on request should be quick, and needs no alert
+                try:
+                    await self._notify(alerts)
+                except (OSError, sqlite3.Error) as e:
+                    self.logger.error("alert_failed", error=str(e) or repr(e))
+            self._write_metrics()
             self.logger.info("crawl_completed",
+                             outcome=outcome,
                              total_items=len(self.results),
                              pages_visited=self.state.page_count,
                              duration_seconds=round(time.time() - started, 2),
@@ -277,17 +352,148 @@ class ProductionCrawler:
         """Only the fields asked for, at export: merging and change tracking still see whole items."""
         if not self.config.fields:
             return results
-        picked = [{name: item[name] for name in self.config.fields if item.get(name) not in (None, "", [])}
+        picked = [({name: item[name] for name in self.config.fields if item.get(name) not in (None, "", [])}, item)
                   for item in results]
-        return [item for item in picked if item]  # an item with none of the fields is not one of them
+        # An item with none of the fields is not one of them. Provenance stays with those that are.
+        return [{**fields, **({META: item[META]} if META in item else {})} for fields, item in picked if fields]
 
-    def _track_changes(self, start_urls: List[str]):
+    def _crawl_key(self, start_urls: List[str]) -> str:
+        """Names the crawl across runs: the same start URLs and selectors give the same key."""
         # Examples teach different selectors, so a crawl taught other values is a different crawl.
         identity = {**self.config.selectors, **{f"example:{k}": v for k, v in self.config.examples.items()}}
-        path = crawl_file(start_urls, self.state_dir / "snapshots", identity, self.config.item_selector)
+        return crawl_file(start_urls, "", identity, self.config.item_selector).stem
+
+    def _require_clearance(self, start_urls: List[str]):
+        if not self.config.compliance.require_go:
+            return
+        register = load_register(self.config.compliance.site_register)
+        for url in start_urls:
+            blocked = ""
+            try:
+                self.compliance.validate_url(url)
+            except ValueError as e:
+                blocked = str(e)
+            decision = register_decision(url, register, blocked, bool(self.config.login))
+            if decision.verdict != GO:
+                self.compliance.log_scrape_event(url, "not_cleared", error="; ".join(decision.reasons))
+                raise NotCleared(f"{decision.host}: {decision.verdict}. {'; '.join(decision.reasons)}")
+
+    async def _check_proxies(self):
+        pool = self.fetcher.proxies
+        if pool and self.config.proxy.check_url:
+            results = await pool.check(self.config.proxy.check_url)
+            self.logger.info("proxies_checked", results=results)
+
+    def _publish(self, key: str, start_urls: List[str], outcome: str) -> List[Alert]:
+        """Validate, judge and export the run's records, and put the run on record. Returns what to alert about."""
+        started = time.perf_counter()
+        settings = self.config.quality
+        try:
+            records, rejected = self.schema.split(self.results) if self.schema else (self.results, [])
+        except Exception as e:  # a schema that cannot be applied must not cost the run its records
+            records, rejected = self.results, []
+            storage_note = f"validation failed: {type(e).__name__}: {e}"
+            self.logger.error("validation_failed", error=storage_note)
+            self.storage.errors["validation"] = storage_note
+        required = list(dict.fromkeys([*(settings.schema or {}).get("required", []), *self.config.required_fields]))
+        self.quality = quality_of(records + self._known, len(rejected), self.state.page_count, required)
+        failures = threshold_failures(self.quality, settings.min_items, settings.min_valid_ratio, settings.max_null_ratio)
+        METRICS.observe("scraper_stage_seconds", time.perf_counter() - started, stage="validate")
+
+        storage, statuses = self.storage, dict(self.compliance.status_counts)
+        storage.run_id, storage.crawl_key = self.run_id, key
+        storage.quarantined, storage.complete = bool(failures), outcome == "completed"
+        started = time.perf_counter()
+        self.exports = storage.export(self._picked(records))
+        METRICS.observe("scraper_stage_seconds", time.perf_counter() - started, stage="store")
+        if self.dedup and not failures and not storage.errors:
+            self.dedup.commit()
+
+        try:
+            earlier = [run["quality"] for run in self.history.runs(DRIFT_RUNS, key, "completed") if run["quality"]]
+        except sqlite3.Error as e:
+            earlier = []
+            self.logger.warning("history_not_read", error=str(e))
+        drifted = drift(self.quality, earlier) if outcome == "completed" and not self.config.incremental else []
+        ratio = success_ratio(statuses)
+        for name, value in (("scraper_quality_valid_ratio", self.quality["valid_ratio"]), ("scraper_success_ratio", ratio),
+                            ("scraper_quality_null_required_ratio", self.quality["null_required_ratio"])):
+            if value is not None:
+                METRICS.set(name, value)
+        try:
+            rejected_file = storage.write_rejected(rejected)
+            manifest = storage.write_manifest({
+                "run_id": self.run_id, "job_id": self.config.job_id, "crawl": key, "outcome": outcome,
+                "start_urls": start_urls, "parser_version": parser_version(),
+                "schema_version": settings.schema_version, "delivery": self.config.storage.delivery,
+                "pages": self.state.page_count, "statuses": statuses, "success_ratio": ratio, "quality": self.quality,
+                "quarantined": failures, "drift": drifted, "duplicates_dropped": self.duplicates,
+                "rejected": rejected_file, "exports": self.exports, "export_errors": storage.errors})
+        except OSError as e:
+            manifest = None
+            self.logger.error("manifest_failed", error=str(e))
+        state = "quarantined" if failures and outcome == "completed" else outcome
+        try:
+            self.history.finish(self.run_id, state, self.state.page_count, len(records), statuses, self.quality,
+                                failures + drifted)
+        except sqlite3.Error as e:
+            self.logger.warning("history_not_written", error=str(e))
+        self.logger.info("run_judged", stage="validate", state=state, quality=self.quality, failures=failures,
+                         drift=drifted, manifest=manifest)
+
+        alerts = []
+        if failures:
+            alerts.append(Alert(f"quality:{key}", f"{key} was not published: {'; '.join(failures)}", {"run_id": self.run_id}))
+        if drifted:
+            alerts.append(Alert(f"drift:{key}", f"{key} extracts differently: {'; '.join(drifted)}", {"run_id": self.run_id}))
+        if outcome == "failed":
+            alerts.append(Alert(f"run_failed:{key}", f"{key} failed", {"run_id": self.run_id}))
+        if storage.errors:
+            alerts.append(Alert(f"export:{key}", f"{key} could not be saved: {storage.errors}", {"run_id": self.run_id}))
+        return alerts
+
+    def summary_notes(self) -> List[str]:
+        """What a person reading the summary should know about the run's quality."""
+        notes = []
+        if self.quality.get("rejected"):
+            notes.append(f"rejected by the schema: {self.quality['rejected']} (see rejected.jsonl)")
+        if self.duplicates:
+            notes.append(f"duplicates dropped: {self.duplicates}")
+        if self.storage.quarantined:
+            notes.append("below its quality thresholds: kept in quarantine, not delivered")
+        return notes
+
+    async def _notify(self, alerts: List[Alert]):
+        settings = self.config.alerts
+        if not settings.enabled:
+            return
+        log_dir = Path(self.config.logging.audit_log).parent
+        notifier = Notifier(self.history, str(log_dir / "alerts.jsonl"), settings.webhook)
+        for alert in alerts + window_alerts(self.history, settings.min_success_ratio, settings.window_minutes):
+            if await notifier.send(alert):
+                self.logger.warning("alert", rule=alert.rule, detail=alert.message)
+        report = self.changes
+        if settings.change_webhook and report and not report.baseline and (report.new or report.changed or report.removed):
+            delivered = await post_json(settings.change_webhook, {
+                "text": f"{len(report.new)} new, {len(report.changed)} changed, {len(report.removed)} removed",
+                "run_id": self.run_id, "start_urls": self.config.start_urls, **report.to_dict()})
+            self.logger.info("changes_sent", delivered=delivered)
+
+    def _write_metrics(self):
+        """For Prometheus' textfile collector: a crawl started from the command line is gone before it is scraped."""
+        path = Path(self.config.logging.audit_log).with_name("metrics.prom")
+        try:
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(METRICS.render(), encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError as e:
+            self.logger.warning("metrics_not_written", error=str(e))
+
+    def _track_changes(self, start_urls: List[str]):
+        path = self.state_dir / "snapshots" / f"{self._crawl_key(start_urls)}.json"
         try:
             # Into this run's own folder, alongside its exports, when there is one.
-            self.changes = track(self.results, path, self.storage.last_run_dir or self.config.output_dir)
+            self.changes = track(self.results + self._known, path, self.storage.last_run_dir or self.config.output_dir)
         except OSError as e:
             self.logger.error("change_tracking_failed", error=str(e))
             return
@@ -299,6 +505,8 @@ class ProductionCrawler:
     async def close(self):
         """Release network resources."""
         await self.fetcher.close()
+        if self.llm:
+            await self.llm.close()
 
     async def _seed_from_sitemaps(self, start_urls: List[str]):
         """Add the pages listed in each site's sitemaps to the frontier."""
@@ -482,15 +690,31 @@ class ProductionCrawler:
         return True
 
     def _gave_up_on(self, url: str) -> bool:
-        return self._refusals.get(site_of(url), 0) >= MAX_CONSECUTIVE_REFUSALS
+        return site_of(url) in self._open_circuits
 
     def _note_refusal(self, url: str):
         site = site_of(url)
         self._refusals[site] = self._refusals.get(site, 0) + 1
-        if self._refusals[site] == MAX_CONSECUTIVE_REFUSALS:
-            self.logger.warning("site_abandoned", site=site, consecutive_refusals=MAX_CONSECUTIVE_REFUSALS)
-            self.compliance.log_scrape_event(url, "site_abandoned",
-                                             error=f"Stopped after {MAX_CONSECUTIVE_REFUSALS} refusals in a row")
+        self._note_outcome(url, ok=False)
+
+    def _note_outcome(self, url: str, ok: bool):
+        """Feed the site's circuit breaker. Once open, the site's pages wait for a later --resume."""
+        site = site_of(url)
+        limits = self.config.concurrency
+        recent = self._recent.setdefault(site, deque(maxlen=limits.breaker_window))
+        recent.append(ok)
+        if ok or site in self._open_circuits:
+            return
+        reason = None
+        if self._refusals.get(site, 0) >= limits.breaker_failures:
+            reason = f"Stopped after {limits.breaker_failures} refusals in a row"
+        elif len(recent) == limits.breaker_window and recent.count(False) / len(recent) >= limits.breaker_error_rate:
+            reason = f"Stopped after {recent.count(False)} of the last {len(recent)} pages failed"
+        if reason:
+            self._open_circuits.add(site)
+            METRICS.inc("scraper_circuits_open_total")
+            self.logger.warning("site_abandoned", site=site, reason=reason)
+            self.compliance.log_scrape_event(url, "site_abandoned", error=reason)
 
     async def fetch_page(self, url: str, raw: bool = False, render: bool = False) -> Optional[Dict[str, Any]]:
         """Fetch one URL through the full compliance, politeness and retry pipeline.
@@ -511,6 +735,7 @@ class ProductionCrawler:
         if not await self._robots_allow(url):
             return None
 
+        bind(stage="fetch")
         self._mention_slow_pacing(url)
         await self.politeness.wait_for_slot(url)
 
@@ -538,6 +763,8 @@ class ProductionCrawler:
             self.compliance.log_scrape_event(url, "http_error", error=str(e))
             if e.status in REFUSAL_STATUSES:
                 self._note_refusal(url)
+            else:
+                self._note_outcome(url, ok=False)
             return None
         except Exception as e:
             if raw or render or not self.fetcher.fallback_enabled:
@@ -549,8 +776,9 @@ class ProductionCrawler:
                 raise e from None
 
         status = fetch_result["status_code"]
-        log_request(self.logger, url, "GET", status, (time.time() - start_time) * 1000,
-                    fetcher_type=fetch_result.get("fetcher_type"))
+        fetcher_type = fetch_result.get("fetcher_type")
+        METRICS.observe("scraper_stage_seconds", time.time() - start_time, stage="fetch", fetcher=fetcher_type)
+        log_request(self.logger, url, "GET", status, (time.time() - start_time) * 1000, fetcher_type=fetcher_type)
 
         if status == 304:
             previous = self.raw_storage.load(str(self.raw_storage.path_for(url)))
@@ -572,11 +800,36 @@ class ProductionCrawler:
         if fetch_result.get("truncated"):
             self.logger.warning("response_truncated", url=url)
 
-        content_type = (fetch_result.get("headers") or {}).get("content-type", "").lower()
-        if self.config.storage.save_raw_html and not raw and (not content_type or "html" in content_type):
-            self.raw_storage.save(url, fetch_result["content"])
+        if raw:
+            return fetch_result
+        directives = self._robots_directives(url, fetch_result)
+        fetch_result["robots"] = directives
+        if "noindex" in directives:
+            return fetch_result  # the page asks not to be stored. noarchive is about showing copies to others
 
+        content_type = (fetch_result.get("headers") or {}).get("content-type", "").lower()
+        if self.config.storage.save_raw_html and (not content_type or "html" in content_type):
+            self.raw_storage.save(url, fetch_result["content"])
+        await self._snapshot(url, fetch_result)
         return fetch_result
+
+    def _robots_directives(self, url: str, fetch_result: Dict[str, Any]) -> Set[str]:
+        robots = self.config.robots
+        if not robots.respect or not robots.respect_meta or self.politeness.ignores_robots(url):
+            return set()
+        return robots_directives(fetch_result["content"] if is_html(fetch_result) else "",
+                                 fetch_result.get("headers") or {}, self.politeness.robots_checker.agent_token)
+
+    async def _snapshot(self, url: str, fetch_result: Dict[str, Any]):
+        """Keep the fetch, so the page can be parsed again without asking the site again."""
+        if self.snapshots is None:
+            return
+        try:
+            fetch_result["snapshot_id"] = await asyncio.to_thread(
+                self.snapshots.save, url, fetch_result, self.run_id, self.config.job_id)
+            bind(snapshot_id=fetch_result["snapshot_id"])
+        except Exception as e:  # a full disk or an unreachable bucket must not cost the crawl its data
+            self.logger.error("snapshot_failed", url=url, error=str(e) or repr(e))
 
     async def _robots_allow(self, url: str, requested: Optional[str] = None) -> bool:
         """Check url against its site's robots.txt. A refusal is logged under the address that was requested."""
@@ -590,6 +843,17 @@ class ProductionCrawler:
         if failure and self.config.open_web:
             self._note_refusal(url)  # a dead or unreachable site, of which the open web has many
         return False
+
+    async def _may_visit(self, url: str) -> bool:
+        """Whether a page that browser actions lead to may be loaded. Paced like any other."""
+        try:
+            self.compliance.validate_url(url)
+        except ValueError:
+            return False
+        if not await self.politeness.can_fetch(url):
+            return False
+        await self.politeness.wait_for_slot(url)
+        return True
 
     def _mention_slow_pacing(self, url: str):
         domain = urlparse(url).netloc
@@ -608,6 +872,12 @@ class ProductionCrawler:
         async with limit:
             try:
                 await self._process(url, depth)
+            except ParseFailed as e:
+                # The site did nothing wrong and the snapshot is kept, so it is neither blamed nor asked again.
+                self.logger.error("parse_failed", url=url, error=str(e))
+                self.compliance.log_scrape_event(url, "parse_failed", error=str(e))
+                self.retry_manager.dlq.add(RetryContext(url=url, attempt=1, last_error=e), str(e), stage="parse",
+                                           snapshot_id=e.snapshot_id)
             except Exception as e:
                 self._note_refusal(url)
                 self.logger.error("url_processing_failed", url=url, error=str(e) or repr(e))
@@ -626,6 +896,13 @@ class ProductionCrawler:
         if not fetch_result.get("unchanged") and not self._landed_well(url, final_url, fetch_result):
             return
         self._refusals.pop(site_of(url), None)
+        self._note_outcome(url, ok=True)
+        if "noindex" in fetch_result.get("robots", ()):
+            self.compliance.log_scrape_event(url, "robots_noindex",
+                                             error="The page's robots tag says noindex. --allow-noindex stores it anyway")
+            if is_html(fetch_result) and "nofollow" not in fetch_result["robots"]:
+                self.extract_links(fetch_result["content"], final_url, depth)
+            return
 
         # Hashing the decoded text matches what the ETag cache stores between runs.
         digest = hashlib.sha256(fetch_result["content"].encode("utf-8", "replace")
@@ -642,12 +919,15 @@ class ProductionCrawler:
             self._content_hashes.add(digest)  # before parsing, or a copy arriving meanwhile is stored too
             first_view = fetch_result
             fetch_result, page = await self._best_view(url, fetch_result)
-            new_items = self._store(url, page)
+            bind(stage="store", snapshot_id=fetch_result.get("snapshot_id"))
+            await self._ask_llm(url, fetch_result, page)
+            await self._save_extraction(fetch_result, page)
+            new_items = self._store(url, page, fetch_result)
             if self.etag_cache:
                 self.etag_cache.update(url, first_view["headers"], first_view["content"])
 
         self._content_hashes.add(digest)
-        if is_html(fetch_result):
+        if is_html(fetch_result) and "nofollow" not in fetch_result.get("robots", ()):
             # A next-page link on a page that added nothing leads nowhere worth going.
             self.extract_links(fetch_result["content"], final_url, depth, follow_pagination=new_items > 0)
         if page is not None:
@@ -686,12 +966,43 @@ class ProductionCrawler:
         return self.etag_cache is not None and self.etag_cache.get_content_hash(url) == digest
 
     async def _parse(self, fetch_result: Dict[str, Any]) -> ParsedPage:
-        # Parsing a large page takes real time, so keep it off the event loop, and bound it.
-        return await asyncio.wait_for(
-            asyncio.to_thread(self.parser.parse_page, fetch_result, self._selectors,
-                              self._item_selector, self.config.include_markdown),
-            MAX_PARSE_SECONDS,
-        )
+        bind(stage="parse", snapshot_id=fetch_result.get("snapshot_id"))
+        started = time.perf_counter()
+        try:
+            # Parsing a large page takes real time, so keep it off the event loop, and bound it.
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.parser.parse_page, fetch_result, self._selectors,
+                                  self._item_selector, self.config.include_markdown),
+                MAX_PARSE_SECONDS,
+            )
+        except Exception as e:
+            failure = ParseFailed(f"{type(e).__name__}: {e}" if str(e) else f"Parsing failed: {type(e).__name__}")
+            failure.snapshot_id = fetch_result.get("snapshot_id")
+            raise failure from e
+        finally:
+            METRICS.observe("scraper_stage_seconds", time.perf_counter() - started, stage="parse")
+
+    async def _ask_llm(self, url: str, fetch_result: Dict[str, Any], page: ParsedPage):
+        """The last resort, for pages no deterministic method could read."""
+        if self.llm and not filled(page.items) and is_html(fetch_result):
+            records = await self.llm.extract(url, fetch_result["content"], self.config.quality.schema,
+                                             fetch_result.get("snapshot_id"))
+            page.items = [record for record in records if filled([{k: v for k, v in record.items()
+                                                                   if k not in ("source", "llm_model")}])]
+
+    async def _save_extraction(self, fetch_result: Dict[str, Any], page: ParsedPage):
+        snapshot_id = fetch_result.get("snapshot_id")
+        if self.snapshots is None or not snapshot_id:
+            return
+        spec = {"selectors": self._selectors, "item_selector": self._item_selector,
+                "include_markdown": self.config.include_markdown}
+        if any(item.get("source") == "llm" for item in page.items):
+            spec["llm"] = self.config.llm.model
+        try:
+            await asyncio.to_thread(self.snapshots.save_extraction, snapshot_id, page.items, spec, parser_version(),
+                                    self.config.quality.schema_version, page.errors)
+        except Exception as e:
+            self.logger.error("extraction_not_recorded", snapshot=snapshot_id, error=str(e) or repr(e))
 
     async def _best_view(self, url: str, fetch_result: Dict[str, Any]) -> Tuple[Dict[str, Any], ParsedPage]:
         """Parse a page, and try the browser when the result suggests more is there."""
@@ -713,7 +1024,11 @@ class ProductionCrawler:
             return fetch_result, page
 
         await self._learn_from_examples(rendered)
-        rendered_page = await self._parse(rendered)
+        try:
+            rendered_page = await self._parse(rendered)
+        except ParseFailed as e:  # the static copy is still good to use
+            self.logger.warning("render_failed", url=url, error=str(e))
+            return fetch_result, page
         if page_strength(rendered_page) <= page_strength(page) * RENDER_GAIN:
             return fetch_result, page
 
@@ -756,16 +1071,24 @@ class ProductionCrawler:
         learned = await asyncio.to_thread(learn_selectors, fetch_result["content"], self._examples)
         if not self._examples:
             return  # another page taught them meanwhile
+        url = fetch_result["url"]
         if learned is None:
-            self.logger.warning("examples_not_found", url=fetch_result["url"], examples=self._examples)
-            return
+            # The values may have changed since the site was learned. What was learned then may still fit.
+            learned = self.selector_cache.get(url, self._examples)
+            if learned is None or not filled(self.parser.html_parser.parse_rows(
+                    fetch_result["content"], url, *learned).items):
+                self.logger.warning("examples_not_found", url=url, examples=self._examples)
+                return
+            self.logger.info("selectors_from_cache", url=url)
+        elif self.selector_cache.put(url, self._examples, *learned):
+            self.logger.warning("selector_drift", url=url, detail="The site's layout changed since it was learned")
 
         self._item_selector, self._selectors = learned
         self.learned_selectors = learned
         self._examples = {}
         self.logger.info("selectors_learned", item=self._item_selector, fields=self._selectors)
 
-    def _store(self, url: str, page: ParsedPage) -> int:
+    def _store(self, url: str, page: ParsedPage, fetch_result: Dict[str, Any]) -> int:
         """Keep the parsed items that hold real data, and audit the outcome.
 
         Returns how many new items the page added.
@@ -780,22 +1103,40 @@ class ProductionCrawler:
 
         personal_data = sorted({name for item in items for name in self.compliance.scan_for_personal_data(item)})
 
+        settings = self.config.quality
+        provenance = PageProvenance(fetch_result, self._selectors, self._item_selector, parser_version(),
+                                    settings.schema_version, self.run_id) if settings.provenance else None
         before = len(self.results)
         stored = []
+        repeated = 0
         for item in items:
             data = {"url": url, **item}
             if data["url"] != url:
                 data["source_url"] = url
             if self.config.required_fields:
                 data = self.compliance.check_data_minimization(data, self.config.required_fields)
+            origin = provenance.of(data) if provenance else None  # of the values as the page has them
+            if self.config.compliance.redact_pii:
+                data = self.compliance.redact(data)
+            if settings.normalize:
+                data = normalize_item(data, settings.currency, settings.rates)
+            if self.dedup and self.dedup.duplicate_of(data):
+                self.duplicates += 1
+                if self.dedup.repeats_earlier_run:
+                    self._known.append(data)
+                    repeated += 1
+                continue
+            if origin:
+                data[META] = origin
             self._add_result(data)
             stored.append(data)
 
+        METRICS.inc("scraper_items_total", len(stored))
         self.state.append_items(url, stored)
         self.state.extracted_count += len(stored)
         log_parsing(self.logger, url, len(stored), len(page.errors))
         self.compliance.log_scrape_event(url, "success", len(stored), personal_data)
-        return len(self.results) - before
+        return len(self.results) - before + repeated
 
     def _add_result(self, data: Dict[str, Any]):
         """Add an item. Found automatically, one seen on a listing and on its own page is merged.
@@ -807,6 +1148,9 @@ class ProductionCrawler:
                      and (data.get("source_url") or data.get("source") not in RECORD_SOURCES))
         if mergeable and key in self._results_by_key:
             existing = self._results_by_key[key]
+            if META in existing and META in data:
+                merge(existing[META], data[META])
+                data = {name: value for name, value in data.items() if name != META}
             existing.update({name: value for name, value in data.items() if value not in (None, "", [])})
             return
 

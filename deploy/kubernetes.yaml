@@ -1,0 +1,95 @@
+# kubectl create secret generic scraper --from-literal=api-key=... --from-literal=queue-url=redis://... \
+#   --from-literal=database-url=postgresql://... --from-literal=alert-webhook=https://...
+# kubectl create configmap scraper-config --from-file=config/
+# kubectl apply -f deploy/kubernetes.yaml
+#
+# Each worker keeps its own state volume, because SQLite must not be shared over a network file system.
+# Set storage.snapshot_location to s3://... so snapshots outlive a pod, and use Redis for the queue.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: scraper-worker
+  labels: {app: scraper, part: worker}
+spec:
+  serviceName: scraper-worker
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: {app: scraper, part: worker}
+  template:
+    metadata:
+      labels: {app: scraper, part: worker}
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "9100"}
+    spec:
+      terminationGracePeriodSeconds: 60   # time to save the running crawl and hand it back
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: worker
+          image: ghcr.io/OWNER/web-data-extraction:latest   # replace OWNER, and pin a version
+          args: ["my_scraper.ops", "worker", "--host", "0.0.0.0", "--port", "9100"]
+          ports: [{containerPort: 9100, name: http}]
+          env: &env
+            - {name: SCRAPER_API_KEY, valueFrom: {secretKeyRef: {name: scraper, key: api-key}}}
+            - {name: SCRAPER_QUEUE_URL, valueFrom: {secretKeyRef: {name: scraper, key: queue-url}}}
+            - {name: SCRAPER_DATABASE_URL, valueFrom: {secretKeyRef: {name: scraper, key: database-url}}}
+            - {name: SCRAPER_ALERT_WEBHOOK, valueFrom: {secretKeyRef: {name: scraper, key: alert-webhook}}}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}
+          livenessProbe: {httpGet: {path: /health, port: http}, periodSeconds: 30, timeoutSeconds: 5}
+          readinessProbe: {httpGet: {path: /health, port: http}, periodSeconds: 10}
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "2", memory: 2Gi}
+          volumeMounts:
+            - {name: state, mountPath: /app/outputs}
+            - {name: config, mountPath: /app/config, readOnly: true}
+            - {name: shm, mountPath: /dev/shm}
+      volumes:
+        - name: config
+          configMap: {name: scraper-config}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 1Gi}   # Chromium
+  volumeClaimTemplates:
+    - metadata: {name: state}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: {requests: {storage: 20Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scraper-worker
+spec:
+  clusterIP: None
+  selector: {app: scraper, part: worker}
+  ports: [{port: 9100, name: http}]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scraper-scheduler
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext: {runAsNonRoot: true, runAsUser: 10001, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: scheduler
+              image: ghcr.io/OWNER/web-data-extraction:latest
+              args: ["my_scraper.ops", "scheduler", "--once", "--schedules", "config/schedules.json"]
+              env:
+                - {name: SCRAPER_QUEUE_URL, valueFrom: {secretKeyRef: {name: scraper, key: queue-url}}}
+              securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}
+              resources:
+                requests: {cpu: 50m, memory: 128Mi}
+                limits: {cpu: 250m, memory: 256Mi}
+              volumeMounts: [{name: config, mountPath: /app/config, readOnly: true}]
+          volumes:
+            - name: config
+              configMap: {name: scraper-config}

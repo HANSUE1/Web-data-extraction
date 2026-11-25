@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: {POSTGRES_USER: ci, POSTGRES_PASSWORD: ci, POSTGRES_DB: ci}
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U ci" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10
+    env:
+      SCRAPER_TEST_POSTGRES: postgresql://ci:ci@localhost:5432/ci
+      SCRAPER_TEST_REDIS: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: "requirements*.txt"}
+      - run: pip install -r requirements.txt
+      - run: playwright install --with-deps chromium
+      - name: Lint
+        run: ruff check --select E9,F my_scraper
+      - name: Tests
+        run: python -m pytest my_scraper/tests -q
+      - name: Production gate (secrets, fixtures, replay, recovery, performance, contract)
+        run: python -m my_scraper.ops gate
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions: {contents: read, packages: write}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with: {context: ., load: true, tags: "scraper:ci", cache-from: type=gha, cache-to: "type=gha,mode=max"}
+      - name: The image starts and answers its health check
+        run: |
+          docker run -d --name scraper -e SCRAPER_API_KEY=ci scraper:ci
+          for i in $(seq 30); do
+            docker exec scraper python -c "import urllib.request as u; u.urlopen('http://127.0.0.1:9100/health')" && exit 0
+            sleep 2
+          done
+          docker logs scraper; exit 1
+      - name: Log in to the registry
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - name: Name of the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"   # registries take lower case only
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with: {context: ., push: true, tags: "${{ env.IMAGE }}:${{ github.ref_name }},${{ env.IMAGE }}:latest", cache-from: type=gha}

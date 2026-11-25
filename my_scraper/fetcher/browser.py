@@ -9,9 +9,11 @@ import asyncio
 import json
 import time
 from contextlib import suppress
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import urlsplit
 
+from my_scraper.fetcher import actions as page_actions
+from my_scraper.fetcher.proxies import ProxyPool, for_browser
 from my_scraper.utils.urls import site_key
 
 MAX_OPEN_PAGES = 3
@@ -127,6 +129,10 @@ def _registered_domain(url: str) -> str:
     return ".".join(labels[-keep:])
 
 
+async def _anywhere(_url: str) -> bool:
+    return True
+
+
 class NetworkWatch:
     """Counts requests in flight.
 
@@ -165,13 +171,22 @@ class BrowserFetcher:
     """Browser fetcher for JavaScript-rendered pages. Starts Chromium once and shares it."""
 
     def __init__(self, headless: bool = True, timeout: int = 30000, wait_until: str = "domcontentloaded",
-                 user_agent: str = None, expand_rounds: int = 8, viewport: Optional[Dict[str, int]] = None):
+                 user_agent: str = None, expand_rounds: int = 8, viewport: Optional[Dict[str, int]] = None,
+                 locale: Optional[str] = None, timezone: Optional[str] = None, screenshots: bool = False,
+                 actions: Optional[List[Dict[str, Any]]] = None, proxies: Optional[ProxyPool] = None):
         self.headless = headless
         self.timeout = timeout
         self.wait_until = wait_until
         self.user_agent = user_agent
         self.expand_rounds = expand_rounds
         self.viewport = viewport
+        self.locale = locale
+        self.timezone = timezone
+        self.screenshots = screenshots
+        self.actions = actions or []
+        self.proxies = proxies
+        # Asked before a page load that the actions set off. The crawler sets it to its robots.txt check.
+        self.may_visit: Optional[Callable[[str], Awaitable[bool]]] = None
         self.cookies: List[Dict[str, Any]] = []  # session cookies from --login, reused on every context
         self._playwright = None
         self._browser = None
@@ -212,6 +227,18 @@ class BrowserFetcher:
         await self._stop()
         self._start_lock = self._slots = None
 
+    def _profile(self, url: str) -> Dict[str, Any]:
+        """The same browser settings for every page, so the visitor looks the same throughout."""
+        profile = {"user_agent": self.user_agent, "viewport": self.viewport}
+        if self.locale:
+            profile["locale"] = self.locale
+        if self.timezone:
+            profile["timezone_id"] = self.timezone
+        proxy = self.proxies.for_url(url) if self.proxies else None
+        if proxy:
+            profile["proxy"] = for_browser(proxy)
+        return profile
+
     async def login(self, url: str, username: str, password: str) -> List[Dict[str, Any]]:
         """Submit a login form and keep its session cookies for later fetches.
 
@@ -220,7 +247,7 @@ class BrowserFetcher:
         """
         browser = await self._shared_browser()
         async with self._slots:
-            context = await browser.new_context(user_agent=self.user_agent, viewport=self.viewport)
+            context = await browser.new_context(**self._profile(url))
             try:
                 page = await context.new_page()
                 watch = NetworkWatch(page)
@@ -239,13 +266,18 @@ class BrowserFetcher:
             finally:
                 await context.close()
 
-    async def fetch(self, url: str) -> Dict[str, Any]:
-        """Render a page and read everything it shows."""
+    async def fetch(self, url: str, actions: Optional[List[Dict[str, Any]]] = None,
+                    observe: bool = False) -> Dict[str, Any]:
+        """Render a page and read everything it shows.
+
+        actions are steps to take first, see fetcher/actions.py. observe also lists what can be acted on.
+        """
+        actions = self.actions if actions is None else actions
         start_time = time.time()
         browser = await self._shared_browser()
 
         async with self._slots:
-            context = await browser.new_context(user_agent=self.user_agent, viewport=self.viewport)
+            context = await browser.new_context(**self._profile(url))
             if self.cookies:
                 await context.add_cookies(self.cookies)
             try:
@@ -257,8 +289,12 @@ class BrowserFetcher:
                 own_domain = _registered_domain(url)
                 page.on("response", lambda response: self._capture_json(response, own_domain, reads))
 
+                refused: List[str] = []
+                if actions:
+                    refused = await page_actions.guard_navigation(page, url, self.may_visit or _anywhere)
                 response = await self._open(page, url)
                 await self._settle(page, watch)
+                steps = await page_actions.run(page, actions, lambda: watch.quiet(ACTION_QUIET)) if actions else []
 
                 snapshots: List[str] = []
                 if self.expand_rounds:
@@ -268,8 +304,14 @@ class BrowserFetcher:
 
                 content = await self._full_content(page)
                 payloads = [value for value in await asyncio.gather(*reads) if value is not None]
+                extras: Dict[str, Any] = {"actions": steps, "refused_navigations": refused} if actions else {}
+                if observe:
+                    extras["controls"] = await page.evaluate(page_actions.LIST_CONTROLS, page_actions.MAX_CONTROLS)
+                if self.screenshots:
+                    extras["screenshot"] = await page.screenshot(full_page=True)
 
                 return {
+                    **extras,
                     "url": url,
                     "final_url": page.url,
                     "status_code": response.status if response else 200,

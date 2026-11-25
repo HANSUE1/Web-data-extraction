@@ -5,6 +5,8 @@ robots.txt, pacing and compliance checks as the crawler, and requests share them
 two requests to one site are still paced as one visitor.
 """
 import asyncio
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -20,9 +22,12 @@ from parsel import Selector
 from my_scraper.config.settings import CrawlConfig, FetcherType
 from my_scraper.core.crawler import ProductionCrawler
 from my_scraper.core.links import base_url_of, page_links
+from my_scraper.fetcher.actions import ActionError, check as check_actions
+from my_scraper.fetcher.browser import BrowserUnavailable
 from my_scraper.fetcher.smart_fetcher import SmartFetcher
 from my_scraper.parser.auto_extractor import _describes_page, page_markdown
 from my_scraper.parser.universal_parser import ContentTypeDetector, ParsedPage
+from my_scraper.storage.changes import track
 from my_scraper.utils.politeness import PolitenessManager
 from my_scraper.utils.urls import join_url, normalize_url
 
@@ -58,6 +63,8 @@ REFUSALS = {
     "consent_wall": ("The page only shows a consent wall.", 422),
     "soft_404": ("The page does not exist (the site returned a 'not found' page).", 404),
     "off_site_redirect": ("The page redirected to another site.", 422),
+    "robots_noindex": ("The page's robots tag asks that it not be stored.", 403),
+    "parse_failed": ("The page was fetched but could not be parsed.", 502),
     "http_error": ("The site returned an error.", 502),
     "failed": ("The page could not be fetched.", 502),
 }
@@ -102,6 +109,7 @@ class _ServiceCrawler(ProductionCrawler):
         super().__init__(config)  # its state goes to the job folder, which config points at
         self.politeness = service.politeness
         self.fetcher = service.fetcher
+        self.fetcher.browser_fetcher.may_visit = self._may_visit
         self.outcomes: Dict[str, Tuple[str, Optional[str]]] = {}  # url -> (status, reason), in order
 
         log_event = self.compliance.log_scrape_event
@@ -114,6 +122,17 @@ class _ServiceCrawler(ProductionCrawler):
 
     async def close(self):
         """The fetcher is shared, so it stays open for the next request."""
+
+
+class _Rendering:
+    """The shared fetcher, with one request's own way of rendering."""
+
+    fallback_enabled = False
+
+    def __init__(self, fetcher: SmartFetcher, fetch):
+        self.static_fetcher, self.browser_fetcher, self.proxies = \
+            fetcher.static_fetcher, fetcher.browser_fetcher, fetcher.proxies
+        self.fetch = fetch
 
 
 def _norm(name: str) -> str:
@@ -195,14 +214,18 @@ class ScrapeService:
         if ignore_robots_for is None:
             ignore_robots_for = os.environ.get("SCRAPER_IGNORE_ROBOTS_FOR", "").split(",")
         self.ignore_robots_for = [site.strip() for site in ignore_robots_for if site.strip()]
+        self.proxies = [url.strip() for url in os.environ.get("SCRAPER_PROXIES", "").split(",") if url.strip()]
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._watching: Dict[str, asyncio.Lock] = {}
         self._renew_shared()
 
     def _renew_shared(self):
         base = self._config([])
+        self._watching = {}
         self.politeness = PolitenessManager(base)
         self.fetcher = SmartFetcher(base)
+        self.politeness.robots_checker.proxies = self.fetcher.proxies
 
     def _bind_to_loop(self):
         """Connections and locks belong to one event loop. A caller on a new loop gets new ones."""
@@ -229,6 +252,9 @@ class ScrapeService:
         if self.rate_limit:
             config.rate_limit.requests_per_second = self.rate_limit
         config.robots.ignore_for = list(self.ignore_robots_for)
+        config.storage.snapshots = False  # a request's state is deleted as soon as it is answered
+        config.alerts.enabled = False     # and whoever asked is told what went wrong
+        config.proxy.urls = list(self.proxies)
         return config
 
     @contextmanager
@@ -486,6 +512,73 @@ class ScrapeService:
         if response["missing"] and markdown:
             response["markdown"], response["truncated"] = _truncate(markdown, max_chars)
         return response
+
+    async def watch(self, url: str, render: str = "auto") -> Dict[str, Any]:
+        """What changed on a page since it was last watched: items new, changed or removed, and its text.
+
+        The first call saves the baseline.
+        """
+        url = self._check(url, render)
+        with self._job() as job:
+            crawler = self._crawler(job, [url], render, open_web=True, max_pages=1, max_depth=0)
+            result, page = await self._fetch(crawler, url, render)
+            markdown = await asyncio.to_thread(self._markdown, result, page)
+
+        name = hashlib.sha256(url.encode()).hexdigest()[:24]
+        folder = self.home / "watch"
+        items = [{"url": url, **item, "source_url": url} for item in page.items
+                 if not _is_document(item, result.get("final_url") or url)]
+        async with self._watching.setdefault(url, asyncio.Lock()):
+            report = await asyncio.to_thread(track, items, folder / f"{name}.json", str(folder), False, {url})
+            text_file = folder / f"{name}.txt"
+            digest = hashlib.sha256((markdown or "").encode("utf-8", "replace")).hexdigest()
+            before = text_file.read_text(encoding="utf-8") if text_file.exists() else digest
+            text_file.write_text(digest, encoding="utf-8")
+        changes = json.loads(json.dumps(report.to_dict(), default=str))
+        return {"url": url, "baseline": report.baseline, "text_changed": digest != before,
+                "changed_at_all": bool(report.new or report.changed or report.removed or digest != before)
+                and not report.baseline, **changes}
+
+    async def interact(self, url: str, actions: Optional[List[Dict[str, Any]]] = None,
+                       max_chars: int = DEFAULT_MAX_CHARS) -> Dict[str, Any]:
+        """Take steps on a page in the browser, then read it and list what can be acted on next.
+
+        Called with no actions it only looks. Every call starts on a fresh page, so to go further,
+        send the earlier steps again with the next one added.
+        """
+        url = self._check(url)
+        try:
+            steps = check_actions(actions or [])
+        except ActionError as e:
+            raise ServiceError("invalid_action", str(e)) from e
+        if not self.use_browser:
+            raise ServiceError("browser_disabled", "This service runs without a browser.", 503)
+        with self._job() as job:
+            crawler = self._crawler(job, [url], "always", open_web=True, max_pages=1, max_depth=0)
+            browser = self.fetcher.browser_fetcher
+
+            async def fetch(target: str, **_) -> Dict[str, Any]:
+                return await browser.fetch(target, actions=steps, observe=True)
+
+            crawler.fetcher = _Rendering(self.fetcher, fetch)
+            try:
+                result = await crawler.fetch_page(url, render=True)
+            except BrowserUnavailable as e:
+                raise ServiceError("browser_unavailable", str(e), 503) from e
+            except Exception as e:
+                raise ServiceError("failed", f"The page could not be used: {str(e) or repr(e)}", 502) from e
+            if result is None or not crawler._landed_well(url, normalize_url(result.get("final_url") or url), result):
+                raise self._refusal(crawler, url)
+            page = await crawler._parse(result)
+            markdown = await asyncio.to_thread(self._markdown, result, page)
+
+        markdown, truncated = _truncate(markdown, max_chars)
+        final_url = result.get("final_url") or url
+        items = [item for item in page.items if not _is_document(item, final_url)]
+        return {"url": url, "final_url": final_url, "steps": result.get("actions", []),
+                "refused_navigations": result.get("refused_navigations", []),
+                "controls": result.get("controls", []), **self._summary(result, page), "markdown": markdown,
+                "truncated": truncated, "items": items[:MAX_ITEMS], "items_total": len(items)}
 
     @staticmethod
     def _extract_one(page: ParsedPage, fields: List[str]) -> Dict[str, Any]:

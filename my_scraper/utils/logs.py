@@ -2,9 +2,19 @@
 import json
 import logging
 import sys
+from contextvars import ContextVar
 from pathlib import Path
+from typing import Any, Dict
 
 from my_scraper.utils.timeutil import utc_now_iso
+
+# Fields of the page being worked on, such as snapshot_id. Every page is its own task, so each has its own copy.
+_page_fields: ContextVar[Dict[str, Any]] = ContextVar("page_fields", default={})
+
+
+def bind(**fields):
+    """Add fields to every log line of the current task from here on."""
+    _page_fields.set({**_page_fields.get(), **fields})
 
 
 class JsonFormatter(logging.Formatter):
@@ -27,6 +37,7 @@ class StructuredLogger:
                  console: bool = True):
         self.name = name
         self.json_format = json_format
+        self.context: Dict[str, Any] = {}  # on every line of this logger, such as run_id and job_id
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
         self.logger.propagate = False
@@ -69,6 +80,8 @@ class StructuredLogger:
             "level": logging.getLevelName(level),
             "logger": self.name,
             "message": msg,
+            **self.context,
+            **_page_fields.get(),
             **fields,
         }
         text = msg

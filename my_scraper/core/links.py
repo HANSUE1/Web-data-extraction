@@ -1,6 +1,6 @@
 """Find the links on a page worth following, and leave the ones that are not."""
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 
 from parsel import Selector
 
@@ -46,6 +46,31 @@ def forbids_following(sel: Selector) -> bool:
     directives = " ".join(sel.xpath(
         "//meta[translate(@name, 'ROBOTS', 'robots') = 'robots']/@content").getall()).lower()
     return "nofollow" in directives or "none" in re.split(r"[\s,]+", directives)
+
+
+HEAD_CHARS = 200_000
+
+
+def robots_directives(content: str, headers: Dict[str, str], agent: str) -> Set[str]:
+    """What a page asks of crawlers, in its robots meta tag and X-Robots-Tag header: {"noindex", "nofollow"}.
+
+    Directives addressed to another crawler by name are not for us.
+    """
+    given: List[str] = []
+    header_agent = None
+    for part in (headers.get("x-robots-tag") or "").lower().split(","):
+        name, separator, directive = part.partition(":")
+        if separator and name.strip() not in ("unavailable_after", "max-snippet", "max-image-preview", "max-video-preview"):
+            header_agent, part = name.strip(), directive
+        if header_agent in (None, "*", agent.lower()):
+            given.append(part)
+    # Reading the tags means parsing the page, so only when one is there.
+    if re.search(rf"<meta[^>]+(?:robots|{re.escape(agent)})", content[:HEAD_CHARS], re.IGNORECASE):
+        for tag in Selector(text=content, type="html").xpath("//meta[@name and @content]"):
+            if tag.attrib["name"].strip().lower() in ("robots", agent.lower()):
+                given.append(tag.attrib["content"].lower())
+    directives = {word for text in given for word in re.split(r"[\s,]+", text.strip()) if word}
+    return directives | {"noindex", "nofollow"} if "none" in directives else directives
 
 
 def _in_pager(element) -> bool:

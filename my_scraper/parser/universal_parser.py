@@ -11,6 +11,7 @@ from my_scraper.fetcher.discovery import is_platform_api
 from my_scraper.parser import documents
 from my_scraper.parser.auto_extractor import extract_items, unique_items
 from my_scraper.parser.embedded_state import decode_json, find_record_lists, platform_items
+from my_scraper.parser.selectors import alternatives, elements, values
 
 MULTI_VALUE_SUFFIX = "[]"  # a selector named tags[] collects every match, not just the first
 ALL_TEXT = " ::text"  # with the space: all text inside the element, including its children
@@ -118,33 +119,40 @@ class HTMLParser:
         """One item per match of item_selector, with selectors relative to each match."""
         errors: List[str] = []
         try:
-            rows = self._query(Selector(text=content, type="html"), item_selector)
+            page = Selector(text=content, type="html")
+            rows = next(filter(None, (elements(page, option) for option in alternatives(item_selector))), [])
         except Exception as e:  # parsel raises several types for a bad selector
             return ParsedPage(items=[], url=url, errors=[f"Error in item selector: {e}"])
 
         items = [self._extract(row, selectors, errors) for row in rows]
         return ParsedPage(items=items, url=url, errors=errors)
 
-    @staticmethod
-    def _query(sel: Selector, selector: str):
-        """Support CSS and XPath. Use .// for an XPath relative to the current item."""
-        return sel.xpath(selector) if selector.startswith(("/", "./", "(")) else sel.css(selector)
-
     @classmethod
     def first_value(cls, sel: Selector, selector: str) -> Optional[str]:
-        """The value of a single-value field.
+        """The value of a single-value field, from the first of its || alternatives that has one."""
+        return next(filter(None, (cls._first_of(sel, option) for option in alternatives(selector))), None)
+
+    @staticmethod
+    def all_values(sel: Selector, selector: str) -> List[str]:
+        """Every value of a multi-value field, from the first of its || alternatives that has any."""
+        found = ([value.strip() for value in values(sel, option) if value.strip()] for option in alternatives(selector))
+        return next(filter(None, found), [])
+
+    @staticmethod
+    def _first_of(sel: Selector, selector: str) -> Optional[str]:
+        """The value one selector gives.
 
         For 'h4 ::text' this is the whole text of the first h4 with any, so
         '<b>Title:</b> Paper 1' gives 'Title: Paper 1', not just 'Title:'.
         Otherwise it is the first non-blank match: an icon before the text leaves a blank first.
         """
         if selector.endswith(ALL_TEXT):
-            for element in cls._query(sel, selector[:-len(ALL_TEXT)] or "*"):
+            for element in elements(sel, selector[:-len(ALL_TEXT)] or "*"):
                 text = " ".join(piece.strip() for piece in element.xpath(".//text()").getall() if piece.strip())
                 if text:
                     return text
             return None
-        return next((value.strip() for value in cls._query(sel, selector).getall() if value.strip()), None)
+        return next((value.strip() for value in values(sel, selector) if value.strip()), None)
 
     def _extract(self, sel: Selector, selectors: Dict[str, str], errors: List[str]) -> Dict[str, Any]:
         data: Dict[str, Any] = {}
@@ -154,7 +162,7 @@ class HTMLParser:
             key = name[:-len(MULTI_VALUE_SUFFIX)] if multiple else name
             try:
                 if multiple:
-                    data[key] = [value.strip() for value in self._query(sel, selector).getall() if value.strip()]
+                    data[key] = self.all_values(sel, selector)
                 else:
                     data[key] = self.first_value(sel, selector)
             except Exception as e:  # parsel raises several types for a bad selector

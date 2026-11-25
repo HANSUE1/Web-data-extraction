@@ -1,5 +1,7 @@
 """Multi-format storage: JSON, JSONL, CSV and SQLite."""
 import csv
+import hashlib
+import importlib
 import json
 import re
 import sqlite3
@@ -10,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from my_scraper.config.settings import RESULTS_DIR
+from my_scraper.storage.database import DatabaseError, deliver
 
 Item = Dict[str, Any]
 
@@ -207,6 +210,11 @@ class StorageManager:
         self.config = config
         self.errors: Dict[str, str] = {}
         self.last_run_dir: Optional[str] = None  # the folder this run's files went to
+        # Set by the crawler once it has judged the run.
+        self.run_id = ""
+        self.crawl_key = ""
+        self.quarantined = False  # below its quality thresholds: kept apart, and not delivered
+        self.complete = True      # an interrupted run must not replace a complete dataset
 
     def export(self, items: List[Item], formats: List = None) -> Dict[str, Optional[str]]:
         """Export to all configured formats. One failing must not cost the others their file.
@@ -215,9 +223,25 @@ class StorageManager:
         """
         if formats is None:
             formats = self.config.export_formats
-        if not formats:
-            return {}
+        results: Dict[str, Optional[str]] = {}
+        if formats:
+            results.update(self._export_files(items, formats))
+        if self.config.storage.database_url:
+            try:
+                results["database"] = self._deliver(items)
+            except Exception as e:  # drivers raise their own types, and the files are still good
+                results["database"] = None
+                self.errors["database"] = f"{type(e).__name__}: {e}"
+        for sink in self.config.storage.sinks if items and not self.quarantined else ():
+            try:
+                module, _, function = sink.partition(":")
+                getattr(importlib.import_module(module), function)(items, self.config)
+                results[sink] = sink
+            except Exception as e:
+                self.errors[sink] = f"{type(e).__name__}: {e}"
+        return results
 
+    def _export_files(self, items: List[Item], formats: List) -> Dict[str, Optional[str]]:
         try:
             run_dir = self._new_run_dir()
         except OSError as e:
@@ -236,9 +260,41 @@ class StorageManager:
                 self.errors[fmt.value] = f"{type(e).__name__}: {e}"
         return results
 
+    def _deliver(self, items: List[Item]) -> Optional[str]:
+        storage = self.config.storage
+        if self.quarantined or not items:
+            return None
+        if storage.delivery == "snapshot" and not self.complete:
+            raise DatabaseError("an interrupted run does not replace the delivered snapshot")
+        count = deliver(items, storage.database_url, storage.table, storage.delivery, storage.key_fields,
+                        self.crawl_key, self.run_id)
+        return f"{count} rows in {storage.table}"
+
+    def write_rejected(self, rejected: List[Item]) -> Optional[str]:
+        """Keep the records validation turned away, with the reasons, beside the run's exports."""
+        if not rejected or not self.last_run_dir:
+            return None
+        path = Path(self.last_run_dir) / "rejected.jsonl"
+        path.write_text("".join(json.dumps(entry, ensure_ascii=False, default=str) + "\n" for entry in rejected),
+                        encoding="utf-8", errors="replace")
+        return str(path)
+
+    def write_manifest(self, contents: Dict[str, Any]) -> Optional[str]:
+        """Describe the run's dataset: what it is, how good, and the hash of every file."""
+        if not self.last_run_dir:
+            return None
+        run_dir = Path(self.last_run_dir)
+        files = {path.name: {"bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                 for path in sorted(run_dir.iterdir()) if path.is_file()}
+        path = Path(self.config.storage.state_dir) / "manifests" / f"{run_dir.name}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({**contents, "folder": str(run_dir), "files": files}, indent=1, default=str,
+                                   ensure_ascii=False), encoding="utf-8", errors="replace")
+        return str(path)
+
     def _new_run_dir(self) -> Path:
         """A fresh folder named <site>_<time>, numbered if two runs land in the same second."""
-        root = Path(self.config.output_dir)
+        root = Path(self.config.output_dir) / ("quarantine" if self.quarantined else "")
         root.mkdir(parents=True, exist_ok=True)
         base = f"{run_label(self.config.start_urls)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         name, counter = base, 1

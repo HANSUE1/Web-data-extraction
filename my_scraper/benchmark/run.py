@@ -36,7 +36,7 @@ SITES = Path(__file__).with_name("sites.json")
 PARALLEL = 6
 SITE_TIMEOUT = 150  # seconds
 
-REFUSED_STATUSES = {"robots_disallowed", "robots_unreachable", "blocked_by_site", "login_required", "site_abandoned",
+REFUSED_STATUSES = {"robots_disallowed", "robots_noindex", "robots_unreachable", "blocked_by_site", "login_required", "site_abandoned",
                     "http_error", "off_site_redirect", "consent_wall"}
 META_FIELDS = {"url", "source", "source_url", "type"}
 

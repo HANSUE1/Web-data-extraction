@@ -10,3 +10,8 @@ venv/
 # Everything the scraper writes: results, logs and crawl state
 outputs/
 *.db
+
+# Secrets are injected at run time, never committed
+.env
+config/secrets/
+*.pem

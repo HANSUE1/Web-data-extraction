@@ -1,0 +1,39 @@
+{
+  "name": "books",
+  "start_urls": ["https://books.toscrape.com/"],
+  "max_depth": 0,
+  "max_pages": 60,
+  "export_formats": ["jsonl", "csv"],
+  "track_changes": true,
+  "robots": {"user_agent": "YourBot/1.0 (+https://your-site.example/bot; you@your-site.example)"},
+  "rate_limit": {"requests_per_second": 1.0},
+  "concurrency": {"max_workers": 10, "max_per_domain": 2, "breaker_failures": 5, "breaker_error_rate": 0.6},
+  "browser": {"locale": "en-US", "timezone": "UTC"},
+  "storage": {
+    "snapshots": true,
+    "retention_days": 180,
+    "database_url": "env:SCRAPER_DATABASE_URL",
+    "delivery": "upsert",
+    "key_fields": ["url", "title"]
+  },
+  "quality": {
+    "schema_version": "1",
+    "schema": {
+      "type": "object",
+      "required": ["title", "url", "price"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "url": {"type": "string", "pattern": "^https?://"},
+        "price": {"type": "string", "pattern": "\\d"}
+      }
+    },
+    "normalize": true,
+    "dedupe": "run",
+    "provenance": true,
+    "min_items": 100,
+    "min_valid_ratio": 0.95,
+    "max_null_ratio": 0.05
+  },
+  "compliance": {"redact_pii": true, "site_register": "config/sites.example.json", "require_go": true},
+  "alerts": {"webhook": "env:SCRAPER_ALERT_WEBHOOK", "min_success_ratio": 0.9, "window_minutes": 15}
+}

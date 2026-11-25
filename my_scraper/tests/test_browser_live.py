@@ -8,6 +8,7 @@ from aiohttp import web
 from my_scraper.config.settings import CrawlConfig, FetcherType
 from my_scraper.core.crawler import ProductionCrawler
 from my_scraper.fetcher.browser import BrowserFetcher
+from my_scraper.service.engine import ScrapeService
 from my_scraper.tests.conftest import FILLER
 
 UA = "TestBot/1.0"
@@ -235,3 +236,104 @@ def test_whole_crawl_on_a_javascript_site(site):
     assert len(results) == 6
     assert results[0]["price"] == "$0.99"
     assert results[0]["url"].endswith("/product/Product-number-0")
+
+
+# --- Actions, and the profile ----------------------------------------------------------
+
+GROWING = """
+  let n = 0;
+  function more() {
+    for (let i = 0; i < 2; i++) list.insertAdjacentHTML('beforeend', `<li>Row ${++n}</li>`);
+    if (n >= 6) { btn.remove(); list.insertAdjacentHTML('afterend', '<p class="end">That is all</p>'); }
+  }
+  btn.onclick = more;
+"""
+
+
+def act(site, steps, body, script=""):
+    site.add_raw("/", page(script, FILLER + body), "text/html")
+    return render(site.url + "/", actions=steps, expand_rounds=0)
+
+
+def test_clicks_until_a_condition_holds(site):
+    result = act(site, [{"click": "role=button[name='Again']", "until": ".end"}],
+                 '<ul id="list"></ul><button id="btn">Again</button>', GROWING)
+    assert result["actions"][0]["times"] == 3 and "Row 6" in result["content"]
+
+
+def test_fills_selects_and_reads_what_changed(site):
+    result = act(site, [{"fill": "#q", "value": "kettle"}, {"select": "#s", "value": "price"}, {"wait": "#out b"}],
+                 '<input id="q"><select id="s"><option value="name">n</option><option value="price">p</option></select>'
+                 '<div id="out"></div>',
+                 "s.onchange = () => { out.innerHTML = '<b>' + q.value + ' by ' + s.value + '</b>'; }")
+    assert "kettle by price" in result["content"] and not any("error" in step for step in result["actions"])
+
+
+def test_risky_steps_stop_the_run(site):
+    body = '<button id="buy">Buy now</button><input id="pw" type="password"><p id="out"></p>'
+    script = "buy.onclick = () => { out.textContent = 'ordered'; }"
+    bought = act(site, [{"click": "#buy"}, {"wait": "#out"}], body, script)
+    assert "may change something" in bought["actions"][0]["error"] and len(bought["actions"]) == 1
+    assert '<p id="out"></p>' in bought["content"]
+    assert "password" in act(site, [{"fill": "#pw", "value": "x"}], body, script)["actions"][0]["error"]
+
+
+def test_actions_cannot_leave_the_site_post_a_form_or_enter_forbidden_pages(site, other_site):
+    other_site.add("/", "Elsewhere")
+    for path in ("/allowed", "/posted", "/secret"):
+        site.add(path, path)
+    site.add_raw("/robots.txt", "User-agent: *\nDisallow: /secret", "text/plain")
+    links = (f'<a id="off" href="{other_site.url}/">away</a> <a id="no" href="/secret">s</a> <a id="yes" href="/allowed">a</a>'
+             '<form method="post" action="/posted"><button id="go">Filter</button></form>')
+    site.add_raw("/", page("", FILLER + links), "text/html")
+
+    async def go(target):
+        service = ScrapeService(rate_limit=1000, home="home")
+        try:
+            return await service.interact(site.url + "/", [{"click": target}])
+        finally:
+            await service.close()
+
+    for target in ("#off", "#no", "#go"):
+        result = asyncio.run(go(target))
+        assert result["final_url"] == site.url + "/" and len(result["refused_navigations"]) == 1, target
+    assert not other_site.hits["/"] and not site.hits["/secret"] and not site.hits["/posted"]
+    assert asyncio.run(go("#yes"))["final_url"] == site.url + "/allowed"
+
+
+def test_interact_lists_what_can_be_acted_on(site):
+    site.add_raw("/", page("", FILLER * 4 + '<button>Show more</button><input type="password" aria-label="Secret">'
+                                        '<select aria-label="Sort"><option value="a">A</option></select>'), "text/html")
+
+    async def go():
+        service = ScrapeService(rate_limit=1000, home="home")
+        try:
+            return await service.interact(site.url + "/")
+        finally:
+            await service.close()
+
+    controls = asyncio.run(go())["controls"]
+    assert any((c["role"], c["name"]) == ("button", "Show more") for c in controls)
+    assert any(c["role"] == "combobox" and c["options"] == ["a"] for c in controls)
+    assert "Secret" not in json.dumps(controls)
+
+
+def test_the_browser_profile_is_steady_and_a_screenshot_is_kept(site):
+    script = "document.title = [Intl.DateTimeFormat().resolvedOptions().timeZone, navigator.language].join(' ')"
+    site.add_raw("/", page(script, FILLER), "text/html")
+    result = render(site.url + "/", locale="de-DE", timezone="Europe/Berlin", screenshots=True, expand_rounds=0)
+    assert "Europe/Berlin de-DE" in result["content"] and result["screenshot"].startswith(b"\x89PNG")
+
+
+def test_a_crawl_with_actions_keeps_its_snapshot_and_screenshot(site):
+    site.add_raw("/", page(GROWING, FILLER + '<ul id="list"></ul><button id="btn">Again</button>'), "text/html")
+    config = CrawlConfig(name="t", start_urls=[site.url + "/"], allowed_domains=[site.url.split("//")[1]], max_depth=0,
+                         selectors={"rows[]": "#list li::text"})
+    config.rate_limit.requests_per_second = 100
+    config.browser.actions = [{"click": "#btn", "until": ".end"}]
+    config.browser.screenshots, config.browser.expand_rounds = True, 0
+    crawler = ProductionCrawler(config)
+    [record] = asyncio.run(crawler.crawl())
+    assert len(record["rows"]) == 6
+    [snapshot] = crawler.snapshots.find()
+    assert snapshot["fetcher"] == "browser" and crawler.snapshots.blobs.get(snapshot["screenshot"]).startswith(b"\x89PNG")

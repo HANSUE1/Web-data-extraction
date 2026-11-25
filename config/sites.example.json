@@ -1,0 +1,10 @@
+{
+  "books.toscrape.com": {
+    "tos_url": "https://toscrape.com/",
+    "tos_verdict": "allows",
+    "tos_reviewed": "2026-11-26",
+    "reviewed_by": "replace with whoever read the terms",
+    "data_class": "public",
+    "owner": "replace with the owning team"
+  }
+}

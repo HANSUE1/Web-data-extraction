@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 from urllib.parse import urlparse
 
-# Which method found an item is not a change in the item itself.
-IGNORED_FIELDS = {"source"}
-META_FIELDS = {"url", "source", "source_url", "type"}
+# Which method found an item, and in which snapshot, is not a change in the item itself.
+IGNORED_FIELDS = {"source", "_meta"}
+META_FIELDS = {"url", "source", "source_url", "type", "_meta"}
 
 Item = Dict[str, Any]
 
@@ -161,11 +161,15 @@ def _report_file(output_dir: str, now: datetime) -> Path:
     return path
 
 
-def track(results: List[Item], path: Path, output_dir: str) -> ChangeReport:
-    """Compare results with the last snapshot, write the change report, and save the new snapshot."""
+def track(results: List[Item], path: Path, output_dir: str, write_report: bool = True,
+          also_read: Iterable[str] = ()) -> ChangeReport:
+    """Compare results with the last snapshot, write the change report, and save the new snapshot.
+
+    also_read names pages that were read and may hold no items any more.
+    """
     now = datetime.now().astimezone()
     current = [_plain(item) for item in results]
-    read_pages = {page for page in map(page_of, current) if page}
+    read_pages = {page for page in map(page_of, current) if page} | set(also_read)
     snapshot = load_snapshot(path)
 
     if snapshot is None:
@@ -177,9 +181,10 @@ def track(results: List[Item], path: Path, output_dir: str) -> ChangeReport:
         now_keys = set(_keyed(current))
         kept_items = [item for key, item in _keyed(snapshot["items"]).items()
                       if key not in now_keys and page_of(item) not in read_pages]
-        report_path = _report_file(output_dir, now)
-        _write_json(report_path, report.to_dict())
-        report.report_path = str(report_path)
+        if write_report:
+            report_path = _report_file(output_dir, now)
+            _write_json(report_path, report.to_dict())
+            report.report_path = str(report_path)
 
     _write_json(path, {"saved_at": now.isoformat(timespec="seconds"), "items": current + kept_items})
     report.snapshot_path = str(path)

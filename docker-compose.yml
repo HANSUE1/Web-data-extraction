@@ -1,0 +1,90 @@
+# docker compose up -d --build --scale worker=3
+# Put secrets in .env (not committed): SCRAPER_API_KEY, POSTGRES_PASSWORD, SCRAPER_USER_AGENT, SCRAPER_ALERT_WEBHOOK
+
+x-scraper: &scraper
+  build: .
+  image: web-data-extraction:latest
+  restart: unless-stopped
+  init: true
+  environment: &environment
+    SCRAPER_QUEUE_URL: redis://redis:6379/0
+    SCRAPER_DATABASE_URL: postgresql://scraper:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/scraper
+    SCRAPER_API_KEY: ${SCRAPER_API_KEY:?set SCRAPER_API_KEY in .env}
+    SCRAPER_USER_AGENT: ${SCRAPER_USER_AGENT:-}
+    SCRAPER_ALERT_WEBHOOK: ${SCRAPER_ALERT_WEBHOOK:-}
+    SCRAPER_HOME: /app/outputs/service
+  volumes:
+    - outputs:/app/outputs
+    - ./config:/app/config:ro
+  depends_on:
+    redis: {condition: service_healthy}
+    postgres: {condition: service_healthy}
+
+services:
+  worker:
+    <<: *scraper
+    command: ["my_scraper.ops", "worker", "--host", "0.0.0.0", "--port", "9100"]
+    stop_grace_period: 60s   # time to save the running crawl and hand it back
+    shm_size: 1gb            # Chromium
+    deploy:
+      resources:
+        limits: {cpus: "2", memory: 2G}
+
+  scheduler:
+    <<: *scraper
+    command: ["my_scraper.ops", "scheduler", "--schedules", "config/schedules.json"]
+    healthcheck: {disable: true}
+    deploy:
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+
+  dashboard:
+    <<: *scraper
+    command: ["my_scraper.ops", "serve", "--host", "0.0.0.0", "--port", "9100"]
+    ports: ["127.0.0.1:9100:9100"]
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 512M}
+
+  api:
+    <<: *scraper
+    command: ["my_scraper.service.http_api", "--host", "0.0.0.0", "--port", "9100"]
+    ports: ["127.0.0.1:8787:9100"]
+    shm_size: 1gb
+    deploy:
+      resources:
+        limits: {cpus: "2", memory: 2G}
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]   # the queue survives a restart
+    volumes: ["redis:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 512M}
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: scraper
+      POSTGRES_DB: scraper
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: ["postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scraper"]
+      interval: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: 1G}
+
+volumes:
+  outputs:
+  redis:
+  postgres:

@@ -1,0 +1,24 @@
+# What runs in production: requirements.txt also holds development tools and the examples.
+aiohttp>=3.9.0
+parsel>=1.8.1
+lxml>=4.9.0
+w3lib>=2.1.0                # URLs and character encodings
+protego>=0.3.0              # robots.txt with wildcards, which Python's own parser ignores
+charset-normalizer>=3.3.0   # guessing undeclared encodings
+certifi>=2024.2.2           # trusted certificates, see utils/http.py
+extruct>=0.17.0             # JSON-LD, microdata and OpenGraph
+trafilatura>=2.0.0          # main text and Markdown
+pypdf>=4.0.0                # PDF text
+python-docx>=1.1.0          # Word documents
+openpyxl>=3.1.0             # Excel files
+brotli>=1.1.0
+jsonschema>=4.21.0          # validating records
+tzdata>=2024.1; platform_system == "Windows"  # timezones for schedules
+
+# Optional: only needed by the feature named
+playwright>=1.40.0          # JavaScript sites (also run: playwright install chromium)
+mcp>=2.3.0                  # service.mcp_server, for AI assistants
+redis>=5.0.0                # a job queue shared by several machines
+psycopg[binary]>=3.1.0      # delivery to PostgreSQL
+boto3>=1.34.0               # snapshots in S3
+anthropic>=1.0.0            # llm.enabled, the language model fallback

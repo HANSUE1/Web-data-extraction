@@ -1,0 +1,170 @@
+{
+ "challenge.html": {
+  "status": "blocked_by_site",
+  "next": []
+ },
+ "listing.html": {
+  "status": null,
+  "next": [],
+  "items": [
+   {
+    "title": "Copper Kettle",
+    "url": "https://fixture.test/p/copper-kettle",
+    "image": "https://fixture.test/img/copper-kettle.jpg",
+    "price": "£45.00",
+    "text": "Copper Kettle £45.00",
+    "source": "list"
+   },
+   {
+    "title": "Steel Kettle",
+    "url": "https://fixture.test/p/steel-kettle",
+    "image": "https://fixture.test/img/steel-kettle.jpg",
+    "price": "£32.50",
+    "text": "Steel Kettle £32.50",
+    "source": "list"
+   },
+   {
+    "title": "Glass Teapot",
+    "url": "https://fixture.test/p/glass-teapot",
+    "image": "https://fixture.test/img/glass-teapot.jpg",
+    "price": "£28.00",
+    "text": "Glass Teapot £28.00",
+    "source": "list"
+   },
+   {
+    "title": "Tea Caddy",
+    "url": "https://fixture.test/p/tea-caddy",
+    "image": "https://fixture.test/img/tea-caddy.jpg",
+    "price": "£12.75",
+    "text": "Tea Caddy £12.75",
+    "source": "list"
+   }
+  ]
+ },
+ "listing_alternative.html": {
+  "status": null,
+  "next": [],
+  "items": [
+   {
+    "title": "Copper Kettle",
+    "url": "https://fixture.test/p/copper-kettle",
+    "price": "£45.00",
+    "text": "Copper Kettle £45.00",
+    "source": "list"
+   },
+   {
+    "title": "Steel Kettle",
+    "url": "https://fixture.test/p/steel-kettle",
+    "price": "£32.50",
+    "text": "Steel Kettle £32.50",
+    "source": "list"
+   },
+   {
+    "title": "Glass Teapot",
+    "url": "https://fixture.test/p/glass-teapot",
+    "price": "£28.00",
+    "text": "Glass Teapot £28.00",
+    "source": "list"
+   },
+   {
+    "title": "Tea Caddy",
+    "url": "https://fixture.test/p/tea-caddy",
+    "price": "£12.75",
+    "text": "Tea Caddy £12.75",
+    "source": "list"
+   }
+  ]
+ },
+ "missing_fields.html": {
+  "status": null,
+  "next": [],
+  "items": [
+   {
+    "title": "Copper Kettle",
+    "url": "https://fixture.test/p/copper-kettle",
+    "image": "https://fixture.test/img/copper-kettle.jpg",
+    "price": "£45.00",
+    "text": "Copper Kettle £45.00",
+    "source": "list"
+   },
+   {
+    "title": "Steel Kettle",
+    "url": "https://fixture.test/p/steel-kettle",
+    "image": "https://fixture.test/img/steel-kettle.jpg",
+    "source": "list"
+   },
+   {
+    "title": "Glass Teapot",
+    "url": "https://fixture.test/p/glass-teapot",
+    "image": "https://fixture.test/img/glass-teapot.jpg",
+    "price": "£28.00",
+    "text": "Glass Teapot £28.00",
+    "source": "list"
+   },
+   {
+    "title": "Tea Caddy",
+    "url": "https://fixture.test/p/tea-caddy",
+    "image": "https://fixture.test/img/tea-caddy.jpg",
+    "price": "£12.75",
+    "text": "Tea Caddy £12.75",
+    "source": "list"
+   }
+  ]
+ },
+ "pagination.html": {
+  "status": null,
+  "next": [
+   "/kettles?page=3"
+  ],
+  "items": [
+   {
+    "title": "Copper Kettle",
+    "url": "https://fixture.test/p/copper-kettle",
+    "image": "https://fixture.test/img/copper-kettle.jpg",
+    "price": "£45.00",
+    "text": "Copper Kettle £45.00",
+    "source": "list"
+   },
+   {
+    "title": "Steel Kettle",
+    "url": "https://fixture.test/p/steel-kettle",
+    "image": "https://fixture.test/img/steel-kettle.jpg",
+    "price": "£32.50",
+    "text": "Steel Kettle £32.50",
+    "source": "list"
+   },
+   {
+    "title": "Glass Teapot",
+    "url": "https://fixture.test/p/glass-teapot",
+    "image": "https://fixture.test/img/glass-teapot.jpg",
+    "price": "£28.00",
+    "text": "Glass Teapot £28.00",
+    "source": "list"
+   },
+   {
+    "title": "Tea Caddy",
+    "url": "https://fixture.test/p/tea-caddy",
+    "image": "https://fixture.test/img/tea-caddy.jpg",
+    "price": "£12.75",
+    "text": "Tea Caddy £12.75",
+    "source": "list"
+   }
+  ]
+ },
+ "structured.html": {
+  "status": null,
+  "next": [],
+  "items": [
+   {
+    "title": "Copper Kettle",
+    "text": "Home\nAbout\nHelp\nCopper Kettle\nHolds 1.5 litres.",
+    "language": "en",
+    "source": "json-ld",
+    "type": "Product",
+    "price": "45.00",
+    "currency": "GBP",
+    "sku": "CK-1"
+   }
+  ]
+ }
+}

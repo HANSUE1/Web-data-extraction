@@ -2,7 +2,7 @@
 import asyncio
 import random
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import aiohttp
@@ -11,6 +11,7 @@ from protego import Protego
 from my_scraper.utils.http import create_session
 
 BACKOFF_STATUSES = (429, 503)
+PROXY_ERRORS = (aiohttp.ClientProxyConnectionError, aiohttp.ClientHttpProxyError)
 
 ALLOW_EVERYTHING = "User-agent: *\nAllow: /\n"
 DISALLOW_EVERYTHING = "User-agent: *\nDisallow: /\n"
@@ -37,6 +38,7 @@ class RobotsChecker:
         self._cache: Dict[str, Tuple[Protego, float]] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
         self._failures: Dict[str, str] = {}
+        self.proxies = None  # a ProxyPool: robots.txt goes out the way the pages do
 
     async def is_allowed(self, url: str) -> bool:
         """Check if URL is allowed by robots.txt."""
@@ -91,15 +93,18 @@ class RobotsChecker:
 
         status, body, error = None, "", None
         for _ in range(self.FETCH_ATTEMPTS):
+            proxy = self.proxies.for_url(base_url) if self.proxies else None
             try:
                 async with create_session({"User-Agent": self.user_agent}, timeout) as session:
-                    async with session.get(f"{base_url}/robots.txt") as response:
+                    async with session.get(f"{base_url}/robots.txt", proxy=proxy) as response:
                         status = response.status
                         body = await self._read_limited(response)
                 error = None
                 if status < 500:
                     break
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+                if proxy and isinstance(e, PROXY_ERRORS):
+                    self.proxies.failed(proxy)
                 error = f"{type(e).__name__}: {e}"
 
         if error:
@@ -125,6 +130,8 @@ class RateLimiter:
         self._intervals: Dict[str, float] = {}
         self._floors: Dict[str, float] = {}
         self._next_slot: Dict[str, float] = {}
+        # Set by a queue worker: (domain, interval) -> seconds to wait, agreed between every worker.
+        self.shared: Optional[Callable[[str, float], float]] = None
 
     def interval_for(self, domain: str) -> float:
         return max(self._intervals.get(domain, self.base_interval), self._floors.get(domain, 0.0))
@@ -143,6 +150,11 @@ class RateLimiter:
         Reserving involves no await, so workers cannot race, and a wait on one
         domain never holds up requests to another.
         """
+        if self.shared:
+            wait = await asyncio.to_thread(self.shared, domain, self.interval_for(domain))
+            if wait > 0:
+                await asyncio.sleep(wait + random.uniform(0, 0.05))
+            return
         now = time.monotonic()
         slot = max(now, self._next_slot.get(domain, 0.0))
         self._next_slot[domain] = slot + self.interval_for(domain)

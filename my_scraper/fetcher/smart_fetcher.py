@@ -13,8 +13,11 @@ from w3lib.html import get_meta_refresh
 
 from my_scraper.config.settings import FetcherType
 from my_scraper.core.page_checks import VISIBLE_TEXT, classify_page
+from my_scraper.fetcher import actions as page_actions
 from my_scraper.fetcher.browser import BrowserFetcher, BrowserUnavailable
+from my_scraper.fetcher.proxies import ProxyPool
 from my_scraper.utils.http import create_session
+from my_scraper.utils.politeness import PROXY_ERRORS
 from my_scraper.utils.urls import has_route_fragment, site_key
 
 # Below this much visible text, an HTML page is probably rendered by JavaScript.
@@ -62,8 +65,9 @@ def decode_body(body: bytes, content_type: str = "") -> str:
 class StaticFetcher:
     """Lightweight static HTTP fetcher using aiohttp. Reuses one session for all requests."""
 
-    def __init__(self, headers: Dict[str, str] = None, timeout: int = 30):
+    def __init__(self, headers: Dict[str, str] = None, timeout: int = 30, proxies: Optional[ProxyPool] = None):
         self.headers = headers
+        self.proxies = proxies
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.cookies: Optional[List[Dict[str, Any]]] = None  # session cookies from --login
         self._session: Optional[aiohttp.ClientSession] = None
@@ -102,7 +106,19 @@ class StaticFetcher:
         if self._session is None or self._session.closed:
             self._session = create_session(self.headers, self.timeout, self.cookies)
 
-        async with self._session.get(url, headers=headers) as response:
+        proxy = self.proxies.for_url(url) if self.proxies else None
+        try:
+            result = await self._request(url, headers, proxy)
+        except PROXY_ERRORS:
+            if proxy:
+                self.proxies.failed(proxy)  # the retry goes out through the next one
+            raise
+        if proxy:
+            self.proxies.succeeded(proxy)
+        return result
+
+    async def _request(self, url: str, headers: Optional[Dict[str, str]], proxy: Optional[str]) -> Dict[str, Any]:
+        async with self._session.get(url, headers=headers, proxy=proxy) as response:
             response_headers = {key.lower(): value for key, value in response.headers.items()}
             content_type = response_headers.get("content-type", "")
             body, truncated = await self._read(response, content_type)
@@ -147,7 +163,12 @@ class SmartFetcher:
         self.browser_failed = False
         user_agent = config.robots.user_agent
         # Identify with the same agent robots.txt was checked against and the audit log records.
-        self.static_fetcher = StaticFetcher(headers={"User-Agent": user_agent})
+        self.proxies = ProxyPool(config.proxy.urls, config.proxy.max_failures, config.proxy.rest_seconds) \
+            if config.proxy.urls else None
+        locale = config.browser.locale
+        self.static_fetcher = StaticFetcher(
+            headers={"User-Agent": user_agent, "Accept-Language": f"{locale},{locale.split('-')[0]};q=0.9"},
+            proxies=self.proxies)
         self.browser_fetcher = BrowserFetcher(
             headless=config.browser.headless,
             timeout=config.browser.timeout,
@@ -155,6 +176,11 @@ class SmartFetcher:
             user_agent=user_agent,
             expand_rounds=config.browser.expand_rounds,
             viewport={"width": config.browser.viewport_width, "height": config.browser.viewport_height},
+            locale=locale,
+            timezone=config.browser.timezone,
+            screenshots=config.browser.screenshots,
+            actions=page_actions.check(config.browser.actions),
+            proxies=self.proxies,
         )
 
     @property
@@ -179,7 +205,8 @@ class SmartFetcher:
     async def fetch(self, url: str, force_browser: bool = False,
                     headers: Dict[str, str] = None) -> Dict[str, Any]:
         """Fetch with automatic fallback strategy. Extra headers apply to static requests."""
-        wants_browser = force_browser or self.config.fetcher is FetcherType.BROWSER
+        wants_browser = (force_browser or self.config.fetcher is FetcherType.BROWSER
+                         or bool(self.config.browser.actions))
         if wants_browser or (self.fallback_enabled and has_route_fragment(url)):
             return await self._render(url)
 

@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ignore-robots-for", action="append", metavar="HOST",
                         help="Don't obey robots.txt on this site and its subdomains. Only for sites you "
                              "own or may scrape. Repeat for more sites. Pacing and refusals still apply")
+    parser.add_argument("--allow-noindex", action="store_true",
+                        help="Also store pages whose robots tag says noindex. They are left out by default")
     parser.add_argument("--rate-limit", type=float, help="Requests per second, per domain (default: 1.0)")
     parser.add_argument("--use-browser", action="store_true", help="Fetch every page with the browser")
     parser.add_argument("--no-browser", action="store_true", help="Never use the browser, plain HTTP only")
@@ -80,7 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Compare with the last run of the same crawl: list new, changed and removed items")
     parser.add_argument("--login", nargs=3, metavar=("LOGIN_URL", "USERNAME", "PASSWORD"),
                         help="Log in at LOGIN_URL before crawling, for a site you may access. Needs the "
-                             "browser. Credentials show in your shell history and process list")
+                             "browser. Give the password as env:NAME or file:PATH to keep it out of your "
+                             "shell history and process list")
     parser.add_argument("--resume", action="store_true", help="Continue the last interrupted crawl (pass the same --urls)")
     parser.add_argument("--quiet", action="store_true", help="Keep logs to the log file and show only the summary")
     parser.add_argument("--explain", action="store_true",
@@ -153,6 +156,8 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
         config.output_dir = args.output_dir
     if args.respect_robots:
         config.robots.respect = True
+    if args.allow_noindex:
+        config.robots.respect_meta = False
     if args.ignore_robots_for:
         config.robots.ignore_for = [*config.robots.ignore_for, *args.ignore_robots_for]
     if config.robots.ignore_for:
@@ -199,6 +204,11 @@ def build_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> C
         config.exclude_patterns = args.exclude
     if args.quiet:
         config.logging.console = False
+    try:
+        config.check()
+        config.resolve_secrets()  # so --login can name an environment variable instead of showing a password
+    except ValueError as e:
+        parser.error(str(e))
 
     for pattern in config.include_patterns + config.exclude_patterns:
         try:
@@ -228,6 +238,8 @@ def print_summary(crawler: ProductionCrawler, heading: str):
             print(f"  {fmt}: {path or 'nothing to export'}")
     for fmt, error in crawler.storage.errors.items():
         print(f"  {fmt} export failed: {error}")
+    for line in crawler.summary_notes():
+        print(f"  {line}")
     if not crawler.results:
         print("  nothing extracted: --explain shows what each method found on the page")
     if crawler.changes:

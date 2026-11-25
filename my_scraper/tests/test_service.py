@@ -231,7 +231,7 @@ def test_mcp_server_tools(site, service, monkeypatch, call):
 
     tools, ok, refused = call(session())
 
-    assert tools == ["crawl_site", "extract", "map_site", "scrape_url"]
+    assert tools == ["crawl_site", "extract", "interact", "map_site", "scrape_url", "watch_page"]
     assert not ok.is_error
     assert json.loads(ok.content[0].text)["title"] == "Tide tables explained"
     assert refused.is_error

@@ -69,10 +69,13 @@ outputs/
 │              (all formats of one run share the name), plus --track change reports
 ├── logs/      scraper.log and audit.log
 └── state/     crawl checkpoints (one per set of start URLs, for --resume), raw HTML,
-               the --incremental cache, --track snapshots, failed URLs and the takedown blocklist
+               a snapshot of every fetch, the job queue, run history, the --incremental cache,
+               --track snapshots, failed URLs and the takedown blocklist
 ```
 
-Delete `outputs/results` or `outputs/logs` whenever you like. Deleting `outputs/state` forgets checkpoints, the incremental cache, change-tracking baselines and the takedown blocklist.
+Delete `outputs/results` or `outputs/logs` whenever you like. Deleting `outputs/state` forgets checkpoints, stored snapshots, queued jobs, the incremental cache, change-tracking baselines and the takedown blocklist.
+
+`storage.snapshots: false` in a config file turns snapshots off, and `python -m my_scraper.ops prune --days 180` deletes old ones.
 
 ## Studio (the desktop app)
 
@@ -92,15 +95,49 @@ Keys: `Ctrl+K` command palette, `1`–`4` switch pages, `N` new extraction, `T` 
 
 The app runs one crawl at a time, so a site is never visited faster than its pace. It answers only this computer: other websites open in your browser cannot start crawls or delete runs. Robots.txt exemptions and logins stay command-line only.
 
+## Running in Production
+
+Everything above runs one crawl now. For crawls that must run by themselves, put them on a queue:
+
+```bash
+python -m my_scraper.ops assess https://books.toscrape.com/            # go or no-go, by written rules
+python -m my_scraper.ops enqueue --config config/production.example.json
+python -m my_scraper.ops worker --schedules config/schedules.json --port 9100   # /dashboard and /metrics
+python -m my_scraper.ops jobs                                          # what is waiting, running, dead
+python -m my_scraper.ops dlq list                                      # URLs that used up their retries
+python -m my_scraper.ops replay --latest --strict                      # parse stored pages again, compare
+python -m my_scraper.ops replay --rev HEAD~3 --export old.jsonl        # with an older parser
+python -m my_scraper.ops health --config config/books.json             # score out of 16
+python -m my_scraper.ops gate                                          # checks before a release
+python -m my_scraper.ops search "copper kettle"                        # search what was crawled
+docker compose up -d --build --scale worker=3                          # Redis, PostgreSQL, workers, API
+```
+
+[config/production.example.json](config/production.example.json) turns on validation, deduplication, provenance, redaction, quality thresholds, database delivery and alerts. [docs/COVERAGE.md](docs/COVERAGE.md) lists every production requirement and where it is met. [docs/OPERATIONS.md](docs/OPERATIONS.md) is the operational contract and runbook.
+
+- **Queue.** A SQLite file by default, Redis with `SCRAPER_QUEUE_URL=redis://…` for several machines. A worker that dies loses nothing: its job is resumed by the next one
+- **Snapshots.** Every fetch is kept, compressed and unchangeable, with what was parsed from it. A page that fails to parse is parsed again from there, never fetched again
+- **Quality.** `quality.schema` is a JSON Schema. Records that break it go to `rejected.jsonl`, and a dataset below its thresholds is quarantined instead of published
+- **Delivery.** `storage.database_url` writes to SQLite or PostgreSQL as `snapshot`, `append` or `upsert`. `storage.sinks` calls your own function
+- **Proxies.** `proxy.urls`. A site keeps one proxy for the whole crawl and moves only when that proxy cannot be reached. A refusal from the site is never answered by changing address
+- **Alerts.** `alerts.webhook` hears about low success rates, quality failures, extraction drift, dead letters and long queues
+- **Language model.** `llm.enabled` asks a language model for records when nothing else found any. Off by default, because it sends page text to the model provider (Anthropic)
+- **Secrets.** Write `env:NAME` or `file:/run/secrets/name` in a config file, never the secret
+
+Selectors can name what a thing is, with alternatives in order: `--selector "price=label=Price || .price::text || text=/£([0-9.]+)/"`.
+
 ## For AI Assistants and Other Programs
 
-The scraper also runs as a service, so AI assistants and your own code can use it without the command line. Both versions offer the same four requests, with the same robots.txt and compliance rules as a crawl:
+The scraper also runs as a service, so AI assistants and your own code can use it without the command line. Both versions offer the same requests, with the same robots.txt and compliance rules as a crawl:
 
 | Request | What it returns |
 | --- | --- |
 | `scrape_url` / `POST /v1/scrape` | One page: its main content as clean Markdown (no menus, ads or cookie banners), title, author, date, and the items on it |
 | `crawl_site` / `POST /v1/crawl` | Several pages of one site, each as Markdown, plus the items found. For documentation, blogs and catalogues |
 | `map_site` / `POST /v1/map` | The pages a site has, from its sitemaps and links, optionally filtered by `search` |
+| `watch_page` / `POST /v1/watch` | What changed on a page since it was last watched: items new, changed and removed, and whether the text changed |
+| `interact` / `POST /v1/interact` | A page after steps in the browser (click until, scroll until, fill, select), with the controls found on it. Buying, posting, signing up and leaving the site are refused |
+| `POST /v1/jobs`, `GET /v1/jobs/{id}` | A long crawl, put on the queue for a worker. HTTP only |
 | `extract` / `POST /v1/extract` | Named fields, such as `["price", "brand", "rating"]`, from structured data and the items on a page. `many` gives one record per item on a listing. Fields it can't find are listed, with the page's Markdown attached |
 
 A page that can't be fetched comes back as an error that says why, such as `robots_disallowed` or `login_required`, never as an empty result.
@@ -145,6 +182,7 @@ Both keep their logs and audit trail in `~/.web-data-extraction` (set `SCRAPER_H
 | `--no-pagination` | Treat next-page links like any other link. |
 | `--incremental` | Skip pages that have not changed since the last run. |
 | `--track` | Compare with the last run of the same crawl and report new, changed and removed items. See "Tracking changes" under What the Crawler Does. |
+| `--allow-noindex` | Also store pages whose robots tag says `noindex`. They are left out by default. |
 | `--rate-limit` | Requests per second, per domain. Fractions such as `0.5` work. |
 | `--export` | Any of `json`, `jsonl`, `csv`, `sqlite`. |
 | `--output-dir` | Where exports are written (default `outputs/results`). |
@@ -205,7 +243,7 @@ Automatic extraction goes by page structure, so it can pick the wrong block on u
 - A redirect is checked again where it lands, so a page that forwards into a disallowed path is not kept
 - Each domain is paced separately, slowed down automatically on 429 and 503 responses, and never faster than its `Crawl-delay`
 - `Retry-After` is obeyed once. A server that keeps rate limiting, or asks for a very long wait, ends that URL with a clear message
-- After 5 refusals in a row a site is left alone, and its remaining pages are kept for `--resume`
+- After 5 refusals in a row, or when 60% of its last 20 pages failed, a site is left alone, and its remaining pages are kept for `--resume`
 - Requests identify as `robots.user_agent`. Replace the placeholder contact details there before crawling real sites
 
 **Parsing and export**
@@ -218,7 +256,9 @@ Automatic extraction goes by page structure, so it can pick the wrong block on u
 - Blocks login and paywall URLs by whole path segment (`/login`, `/auth/x`, but not `/author/x`). This is a heuristic based on the URL only
 - Recognises pages that look successful but aren't, and never stores them as data: `blocked_by_site`, `login_required`, `soft_404`, `consent_wall` and `off_site_redirect`
 - Takedowns: `ComplianceManager.handle_takedown_request` adds a domain to `outputs/state/takedown_blocklist.txt` (or `compliance.blocklist_file`), which is enforced on all future crawls
-- Flags personal data by field name and by value pattern (emails, phone numbers, SSNs)
+- Flags personal data by field name and by value pattern (emails, phone numbers, SSNs), and takes it out of records with `compliance.redact_pii`. Snapshots keep pages as they were
+- Pages marked `noindex`, in a robots meta tag or an `X-Robots-Tag` header, are not stored (`robots_noindex`). Their links are followed unless they also say `nofollow`
+- `compliance.allowed_countries` and `denied_countries` by the country ending of the domain, and `require_go` to start only on sites the register clears
 - Writes every request outcome to `outputs/logs/audit.log`
 - `required_fields` limits saved data to those fields
 
@@ -266,7 +306,10 @@ Before a large open-web crawl, set `robots.user_agent` to a name and contact add
 ```
 Web-data-extraction/
 ├── README.md
-├── requirements.txt
+├── requirements.txt        # everything; requirements-runtime.txt is what production needs
+├── config/                 # example configuration, site register and schedules
+├── docs/                   # production coverage, operational contract and runbook
+├── Dockerfile, docker-compose.yml, deploy/   # containers and Kubernetes
 ├── scrape.py               # standalone one-page script, separate from the scraper below
 ├── examples/
 │   ├── books_toscrape.py   # worked example: a hand-written scraper built on the crawler
@@ -280,8 +323,12 @@ Web-data-extraction/
     ├── core/               # crawler, frontier, link finding, page checks
     ├── fetcher/            # HTTP, browser, sitemaps, feeds and platform APIs
     ├── parser/             # automatic extraction, app data, selectors by example, file formats
-    ├── storage/            # exporters, change tracking, the --incremental cache
-    ├── compliance/         # audit trail, URL policy, takedowns, personal data checks
+    ├── storage/            # exporters, databases, snapshots, change tracking, the --incremental cache
+    ├── quality/            # validation, normalization, deduplication, provenance, drift
+    ├── jobqueue/           # durable queue (SQLite, Redis), workers, schedules
+    ├── ops/                # command line for operating it, metrics, alerts, dashboard, health, release gate
+    ├── search/             # search and link analysis over crawled pages, recrawl timing
+    ├── compliance/         # audit trail, URL policy, takedowns, personal data, go or no-go
     ├── utils/              # politeness, retry, URLs, HTTP sessions, logging
     ├── benchmark/          # measures the scraper against real websites
     └── tests/
@@ -295,10 +342,10 @@ For a quick one-page job, the CLI does what a separate script would: `--max-dept
 
 ```bash
 python -m my_scraper.cli.main --urls https://example.com/members \
-    --login https://example.com/login myname 'my-password'
+    --login https://example.com/login myname env:SITE_PASSWORD
 ```
 
-It needs the browser (`playwright`), so it can't be combined with `--no-browser`. The credentials are never written to logs or exports, but they do appear in your shell history and in the process list, so prefer a throwaway or test account. Off by default: without `--login`, login and paywall pages are still reported as `login_required` and never entered.
+It needs the browser (`playwright`), so it can't be combined with `--no-browser`. The credentials are never written to logs or exports. A password typed on the command line appears in your shell history and in the process list, so give it as `env:NAME` or `file:PATH` instead. Off by default: without `--login`, login and paywall pages are still reported as `login_required` and never entered.
 
 ## What It Cannot Do
 

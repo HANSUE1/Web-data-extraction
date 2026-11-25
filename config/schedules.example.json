@@ -1,0 +1,17 @@
+[
+  {
+    "name": "books-nightly",
+    "cron": "30 2 * * *",
+    "timezone": "UTC",
+    "priority": 5,
+    "config_file": "config/production.example.json"
+  },
+  {
+    "name": "quotes-off-peak",
+    "every": "6h",
+    "window": "22:00-06:00",
+    "timezone": "UTC",
+    "enabled": false,
+    "config": {"start_urls": ["https://quotes.toscrape.com/"], "max_depth": 0, "max_pages": 20}
+  }
+]

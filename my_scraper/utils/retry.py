@@ -1,6 +1,7 @@
 """Retry logic with exponential backoff and dead-letter queue."""
 import asyncio
 import json
+import os
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -49,8 +50,8 @@ class DeadLetterQueue:
         self.dlq_file = dlq_file
         Path(dlq_file).parent.mkdir(parents=True, exist_ok=True)
 
-    def add(self, context: RetryContext, reason: str):
-        """Add failed URL to DLQ."""
+    def add(self, context: RetryContext, reason: str, stage: str = "fetch", **details):
+        """Add failed URL to DLQ. stage says what failed: a page that only failed to parse needs no new fetch."""
         entry = {
             "url": context.url,
             "attempts": context.attempt,
@@ -58,6 +59,8 @@ class DeadLetterQueue:
             "last_status": context.last_status,
             "failed_at": utc_now_iso(),
             "reason": reason,
+            "stage": stage,
+            **details,
         }
         with open(self.dlq_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
@@ -69,6 +72,16 @@ class DeadLetterQueue:
                 return [json.loads(line) for line in f if line.strip()]
         except FileNotFoundError:
             return []
+
+    def take_all(self) -> List[Dict[str, Any]]:
+        """Return every entry and start an empty file. The old one is kept beside it, so no evidence is lost."""
+        path = Path(self.dlq_file)
+        taken = path.with_name(f"{path.stem}_{utc_now():%Y%m%d_%H%M%S_%f}{path.suffix}")
+        try:
+            os.replace(path, taken)
+        except FileNotFoundError:
+            return []
+        return DeadLetterQueue(str(taken)).get_all()
 
 
 def _retry_after(response: Dict[str, Any]) -> float:
