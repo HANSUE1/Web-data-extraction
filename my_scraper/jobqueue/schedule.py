@@ -117,8 +117,13 @@ def due_slot(schedule: Dict[str, Any], now: float, state_dir: str = STATE_DIR) -
     return str(int(now // _interval(schedule, state_dir)))
 
 
-def load_schedules(path: str) -> List[Dict[str, Any]]:
-    """Read and check a schedules file, so a mistake shows when it is loaded, not at 2 a.m."""
+def load_schedules(path: str, missing_ok: bool = False) -> List[Dict[str, Any]]:
+    """Read and check a schedules file, so a mistake shows when it is loaded, not at 2 a.m.
+
+    With missing_ok, a file that does not exist yet means no schedules: a fresh deploy starts,
+    and the scheduler picks the file up once it is written."""
+    if missing_ok and not Path(path).exists():
+        return []
     try:
         schedules = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as e:

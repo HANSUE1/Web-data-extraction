@@ -98,10 +98,15 @@ def cmd_jobs(args) -> int:
 
 async def _schedule_forever(queue, path: str, stopping: asyncio.Event):
     log = logging.getLogger("scheduler")
+    warned = False
     while not stopping.is_set():
         try:
-            # Read again each time, so editing the file needs no restart.
-            for name in await asyncio.to_thread(tick, queue, load_schedules(path)):
+            missing = not Path(path).exists()
+            if missing and not warned:
+                log.warning("no schedules file at %s yet; copy config/schedules.example.json there to start", path)
+            warned = missing
+            # Read again each time, so editing or creating the file needs no restart.
+            for name in await asyncio.to_thread(tick, queue, load_schedules(path, missing_ok=True)):
                 log.info("queued %s", name)
         except Exception:  # a broken file or an unreachable queue must not end the scheduler
             log.exception("scheduling failed")
@@ -132,7 +137,7 @@ async def _work(args):
 
     tasks = [asyncio.create_task(worker.run(drain=args.drain)) for worker in workers]
     if args.schedules:
-        load_schedules(args.schedules)  # a mistake should stop the start, not be logged every 20 seconds
+        load_schedules(args.schedules, missing_ok=True)  # a mistake should stop the start, not be logged every 20 seconds
         tasks.append(asyncio.create_task(_schedule_forever(queue, args.schedules, stopping)))
     runner = None
     if args.port:
@@ -164,9 +169,9 @@ def cmd_worker(args) -> int:
 
 def cmd_scheduler(args) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    load_schedules(args.schedules)
+    load_schedules(args.schedules, missing_ok=True)
     if args.once:
-        print(tick(open_queue(args.queue), load_schedules(args.schedules)))
+        print(tick(open_queue(args.queue), load_schedules(args.schedules, missing_ok=True)))
         return 0
     asyncio.run(_schedule_forever(open_queue(args.queue), args.schedules, asyncio.Event()))
     return 0

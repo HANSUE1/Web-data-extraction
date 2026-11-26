@@ -333,3 +333,22 @@ def test_a_bad_schedules_file_is_refused(tmp_path, schedules):
     path.write_text(json.dumps(schedules), encoding="utf-8")
     with pytest.raises(ScheduleError):
         load_schedules(str(path))
+
+
+def test_a_missing_schedules_file_waits_instead_of_failing(tmp_path, caplog):
+    from my_scraper.ops.__main__ import _schedule_forever
+
+    path = str(tmp_path / "schedules.json")
+    with pytest.raises(ScheduleError):
+        load_schedules(path)  # still an error where a file is required
+    assert load_schedules(path, missing_ok=True) == []
+
+    async def one_round():
+        stopping = asyncio.Event()
+        task = asyncio.create_task(_schedule_forever(SQLiteQueue(str(tmp_path / "queue.db")), path, stopping))
+        await asyncio.sleep(0.2)
+        stopping.set()
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(one_round())
+    assert "no schedules file" in caplog.text and "scheduling failed" not in caplog.text

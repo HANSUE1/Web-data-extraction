@@ -110,6 +110,7 @@ python -m my_scraper.ops replay --rev HEAD~3 --export old.jsonl        # with an
 python -m my_scraper.ops health --config config/books.json             # score out of 16
 python -m my_scraper.ops gate                                          # checks before a release
 python -m my_scraper.ops search "copper kettle"                        # search what was crawled
+cp config/schedules.example.json config/schedules.json                 # recurring crawls; without it the scheduler waits
 docker compose up -d --build --scale worker=3                          # Redis, PostgreSQL, workers, API
 ```
 
